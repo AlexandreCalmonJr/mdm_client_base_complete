@@ -12,8 +12,9 @@
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <application
-        android:label="mdm_client_base"
-        android:icon="@mipmap/ic_launcher">
+    android:label="mdm_client_base"
+    android:icon="@mipmap/ic_launcher"
+    android:testOnly="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
