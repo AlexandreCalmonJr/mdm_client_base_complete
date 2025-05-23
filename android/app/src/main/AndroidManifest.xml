@@ -13,8 +13,8 @@
 
     <application
     android:label="mdm_client_base"
-    android:icon="@mipmap/ic_launcher"
-    android:testOnly="true">
+    android:icon="@mipmap/ic_launcher">
+    
         <activity
             android:name=".MainActivity"
             android:exported="true"
