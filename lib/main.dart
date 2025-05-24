@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:logger/logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -50,6 +51,7 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
+  final logger = Logger();
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) {
       service.setAsForegroundService();
@@ -65,41 +67,43 @@ void onStart(ServiceInstance service) async {
 
   final deviceService = DeviceService();
   await deviceService.initialize();
-
   final prefs = await SharedPreferences.getInstance();
   final dataInterval = prefs.getInt('data_interval') ?? 10;
   final heartbeatInterval = prefs.getInt('heartbeat_interval') ?? 3;
   final commandCheckInterval = prefs.getInt('command_check_interval') ?? 1;
 
-  print('Serviço em segundo plano iniciado: ${DateTime.now()}');
-
-  Timer.periodic(Duration(minutes: dataInterval), (_) async {
-    final result = await deviceService.sendDeviceData();
-    print('Dados enviados: $result');
-  });
+  logger.i('Serviço em segundo plano iniciado: ${DateTime.now()}');
 
   int heartbeatFailureCount = prefs.getInt('heartbeat_failure_count') ?? 0;
-  Timer.periodic(Duration(minutes: heartbeatInterval), (_) async {
-    final result = await deviceService.sendHeartbeat();
-    print('Heartbeat: $result${heartbeatFailureCount > 0 ? ', Falhas: $heartbeatFailureCount' : ''}');
-    if (result != 'Heartbeat enviado com sucesso') {
-      heartbeatFailureCount++;
-      await prefs.setString('last_heartbeat_error', '$result às ${DateTime.now().toIso8601String()}');
-      await prefs.setInt('heartbeat_failure_count', heartbeatFailureCount);
-    } else {
-      heartbeatFailureCount = 0;
-      await prefs.remove('last_heartbeat_error');
-      await prefs.setInt('heartbeat_failure_count', heartbeatFailureCount);
-    }
-  });
-
-  Timer.periodic(Duration(minutes: commandCheckInterval), (_) async {
-    await deviceService.checkForCommands();
-  });
-
   Timer.periodic(const Duration(minutes: 1), (_) async {
+    final now = DateTime.now();
+    final minutesSinceStart = now.difference(DateTime(now.year, now.month, now.day)).inMinutes;
+
+    if (minutesSinceStart % dataInterval == 0) {
+      final result = await deviceService.sendDeviceData();
+      logger.i('Dados enviados: $result');
+    }
+
+    if (minutesSinceStart % heartbeatInterval == 0) {
+      final result = await deviceService.sendHeartbeat();
+      logger.i('Heartbeat: $result${heartbeatFailureCount > 0 ? ', Falhas: $heartbeatFailureCount' : ''}');
+      if (result != 'Heartbeat enviado com sucesso') {
+        heartbeatFailureCount++;
+        await prefs.setString('last_heartbeat_error', '$result às ${DateTime.now().toIso8601String()}');
+        await prefs.setInt('heartbeat_failure_count', heartbeatFailureCount);
+      } else {
+        heartbeatFailureCount = 0;
+        await prefs.remove('last_heartbeat_error');
+        await prefs.setInt('heartbeat_failure_count', heartbeatFailureCount);
+      }
+    }
+
+    if (minutesSinceStart % commandCheckInterval == 0) {
+      await deviceService.checkForCommands();
+    }
+
     if (service is AndroidServiceInstance && !await service.isForegroundService()) {
-      print('Serviço parou inesperadamente. Tentando reiniciar...');
+      logger.w('Serviço parou inesperadamente. Tentando reiniciar...');
       await FlutterBackgroundService().startService();
     }
   });
@@ -133,11 +137,12 @@ class MDMClientApp extends StatelessWidget {
 
 class DeviceService {
   static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
-  String serverUrl = 'http://mdm-server.local:3000';
+  String serverUrl = 'https://mdm-server.local:3000';
   String authToken = '';
   final DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
   final Battery battery = Battery();
   final Connectivity connectivity = Connectivity();
+  final Logger logger = Logger();
   String? deviceId;
   Map<String, dynamic> deviceInfo = {};
   static const int maxRetries = 3;
@@ -158,7 +163,7 @@ class DeviceService {
     final batteryLevel = await battery.batteryLevel;
 
     this.authToken = authToken;
-    serverUrl = 'http://$serverHost:$serverPort';
+    serverUrl = 'https://$serverHost:$serverPort';
     deviceId = androidInfo.id;
     deviceInfo = {
       'device_name': androidInfo.device,
@@ -184,18 +189,21 @@ class DeviceService {
 
   Future<bool> validateServerConnection(String host, String port) async {
     try {
-      final response = await http
+      final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+      final httpClient = http.Client();
+      final response = await httpClient
           .get(
-            Uri.parse('http://$host:$port/api/devices'),
+            Uri.parse('https://$host:$port/api/health'),
             headers: {
               'Content-Type': 'application/json',
               'Authorization': 'Bearer $authToken',
             },
           )
           .timeout(const Duration(seconds: 5));
-      return response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 403;
+      httpClient.close();
+      return response.statusCode == 200;
     } catch (e) {
-      print('Erro ao validar conexão com o servidor: $e');
+      logger.e('Erro ao validar conexão com o servidor: $e');
       return false;
     }
   }
@@ -203,16 +211,18 @@ class DeviceService {
   Future<String> sendDeviceData() async {
     if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
       final message = 'Sem conexão ou token inválido';
-      print('Erro: $message');
+      logger.e('Erro: $message');
       return message;
     }
     await initialize();
 
+    final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+    final httpClient = http.Client();
     int attempts = 0;
     while (attempts < maxRetries) {
       attempts++;
       try {
-        final response = await http
+        final response = await httpClient
             .post(
               Uri.parse('$serverUrl/api/devices/data'),
               headers: {
@@ -228,36 +238,38 @@ class DeviceService {
           final lastSync = DateTime.now().toIso8601String();
           await prefs.setString('last_sync', lastSync);
           deviceInfo['last_sync'] = lastSync;
-          print('Dados enviados com sucesso: ${response.body}');
+          logger.i('Dados enviados com sucesso: ${response.body}');
           return 'Dados enviados com sucesso';
         } else if (response.statusCode == 401) {
-          print('Erro 401: Token inválido');
+          logger.e('Erro 401: Token inválido');
           return 'Token inválido';
         } else if (response.statusCode == 403) {
-          print('Erro 403: Acesso negado');
+          logger.e('Erro 403: Acesso negado');
           return 'Acesso negado';
         } else {
-          print('Erro ${response.statusCode}: ${response.body}');
+          logger.e('Erro ${response.statusCode}: ${response.body}');
           return 'Erro ${response.statusCode}: ${response.body}';
         }
       } on TimeoutException {
-        print('Tentativa $attempts: Timeout ao conectar ao servidor');
+        logger.w('Tentativa $attempts: Timeout ao conectar ao servidor');
         if (attempts == maxRetries) {
           return 'Falha: Tempo limite esgotado após $maxRetries tentativas';
         }
         await Future.delayed(retryDelay);
       } on SocketException catch (e) {
-        print('Tentativa $attempts: SocketException: $e');
+        logger.w('Tentativa $attempts: SocketException: $e');
         if (attempts == maxRetries) {
           return 'Falha: Não foi possível conectar ao servidor ($e)';
         }
         await Future.delayed(retryDelay);
       } catch (e) {
-        print('Tentativa $attempts: Erro inesperado: $e');
+        logger.e('Tentativa $attempts: Erro inesperado: $e');
         if (attempts == maxRetries) {
           return 'Erro ao enviar dados: $e';
         }
         await Future.delayed(retryDelay);
+      } finally {
+        httpClient.close();
       }
     }
     return 'Falha após $maxRetries tentativas';
@@ -266,23 +278,26 @@ class DeviceService {
   Future<String> sendHeartbeat() async {
     if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
       final message = 'Sem conexão ou token inválido';
-      print('Erro: $message');
+      logger.e('Erro: $message');
       return message;
     }
 
-    final host = serverUrl.replaceFirst('http://', '').split(':')[0];
-    final port = serverUrl.split(':').length > 2 ? serverUrl.split(':')[2] : '3000';
+    final uri = Uri.parse(serverUrl);
+    final host = uri.host;
+    final port = uri.port.toString();
     if (!await validateServerConnection(host, port)) {
       final message = 'Servidor não acessível: $serverUrl';
-      print('Erro: $message');
+      logger.e('Erro: $message');
       return message;
     }
 
+    final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+    final httpClient = http.Client();
     int attempts = 0;
     while (attempts < maxRetries) {
       attempts++;
       try {
-        final response = await http
+        final response = await httpClient
             .post(
               Uri.parse('$serverUrl/api/devices/heartbeat'),
               headers: {
@@ -293,26 +308,28 @@ class DeviceService {
             )
             .timeout(timeout);
 
-        print('Heartbeat enviado: ${response.statusCode} ${response.body}');
+        logger.i('Heartbeat enviado: ${response.statusCode} ${response.body}');
         return 'Heartbeat enviado com sucesso';
       } on TimeoutException {
-        print('Tentativa $attempts: Timeout ao enviar heartbeat');
+        logger.w('Tentativa $attempts: Timeout ao enviar heartbeat');
         if (attempts == maxRetries) {
           return 'Falha: Timeout após $maxRetries tentativas';
         }
         await Future.delayed(retryDelay);
       } on SocketException catch (e) {
-        print('Tentativa $attempts: SocketException: $e');
+        logger.w('Tentativa $attempts: SocketException: $e');
         if (attempts == maxRetries) {
           return 'Falha: Não foi possível conectar ao servidor ($e)';
         }
         await Future.delayed(retryDelay);
       } catch (e) {
-        print('Tentativa $attempts: Erro inesperado: $e');
+        logger.e('Tentativa $attempts: Erro inesperado: $e');
         if (attempts == maxRetries) {
           return 'Erro ao enviar heartbeat: $e';
         }
         await Future.delayed(retryDelay);
+      } finally {
+        httpClient.close();
       }
     }
     return 'Falha após $maxRetries tentativas';
@@ -320,15 +337,17 @@ class DeviceService {
 
   Future<void> checkForCommands() async {
     if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
-      print('Erro: Sem conexão ou token inválido');
+      logger.e('Erro: Sem conexão ou token inválido');
       return;
     }
 
+    final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+    final httpClient = http.Client();
     int attempts = 0;
     while (attempts < maxRetries) {
       attempts++;
       try {
-        final response = await http
+        final response = await httpClient
             .get(
               Uri.parse('$serverUrl/api/devices/commands?device_id=$deviceId'),
               headers: {
@@ -347,38 +366,50 @@ class DeviceService {
               commandData['parameters']?['apkUrl'],
             );
           }
-          print('Comandos verificados: ${commands.length} comandos');
+          logger.i('Comandos verificados: ${commands.length} comandos');
           return;
         } else {
-          print('Erro ${response.statusCode}: ${response.body}');
+          logger.e('Erro ${response.statusCode}: ${response.body}');
           return;
         }
       } on TimeoutException {
-        print('Tentativa $attempts: Timeout ao verificar comandos');
+        logger.w('Tentativa $attempts: Timeout ao verificar comandos');
         if (attempts == maxRetries) {
           return;
         }
         await Future.delayed(retryDelay);
       } on SocketException catch (e) {
-        print('Tentativa $attempts: SocketException: $e');
+        logger.w('Tentativa $attempts: SocketException: $e');
         if (attempts == maxRetries) {
           return;
         }
         await Future.delayed(retryDelay);
       } catch (e) {
-        print('Tentativa $attempts: Erro inesperado: $e');
+        logger.e('Tentativa $attempts: Erro inesperado: $e');
         if (attempts == maxRetries) {
           return;
         }
         await Future.delayed(retryDelay);
+      } finally {
+        httpClient.close();
       }
     }
   }
 
   Future<void> executeCommand(String command, String? packageName, String? apkUrl) async {
-    final isAdmin = await platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+    bool isAdmin;
+    try {
+      isAdmin = await platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+    } on PlatformException catch (e) {
+      logger.e('Erro ao verificar permissões de administrador: $e');
+      if (e.code == 'MissingPluginException') {
+        logger.e('MethodChannel não encontrado. Verifique a integração com MainActivity.kt');
+      }
+      return;
+    }
+
     if (!isAdmin) {
-      print('Permissões de administrador necessárias');
+      logger.w('Permissões de administrador necessárias');
       return;
     }
 
@@ -386,11 +417,11 @@ class DeviceService {
       switch (command) {
         case 'lock':
           await platform.invokeMethod('lockDevice');
-          print('Dispositivo bloqueado');
+          logger.i('Dispositivo bloqueado');
           break;
         case 'wipe':
           await platform.invokeMethod('wipeData');
-          print('Dados apagados');
+          logger.i('Dados apagados');
           break;
         case 'install_app':
           if (packageName != null && apkUrl != null) {
@@ -408,10 +439,10 @@ class DeviceService {
           }
           break;
         default:
-          print('Comando desconhecido: $command');
+          logger.w('Comando desconhecido: $command');
       }
     } catch (e) {
-      print('Erro ao executar comando: $e');
+      logger.e('Erro ao executar comando: $e');
     }
   }
 
@@ -422,18 +453,18 @@ class DeviceService {
       final response = await http.get(Uri.parse(apkUrl));
       await apkFile.writeAsBytes(response.bodyBytes);
       await platform.invokeMethod('installSystemApp', {'apkPath': apkFile.path});
-      print('Aplicativo $packageName instalado');
+      logger.i('Aplicativo $packageName instalado');
     } catch (e) {
-      print('Erro ao instalar aplicativo: $e');
+      logger.e('Erro ao instalar aplicativo: $e');
     }
   }
 
   Future<void> uninstallApp(String packageName) async {
     try {
       await platform.invokeMethod('uninstallPackage', {'packageName': packageName});
-      print('Aplicativo $packageName desinstalado');
+      logger.i('Aplicativo $packageName desinstalado');
     } catch (e) {
-      print('Erro ao desinstalar aplicativo: $e');
+      logger.e('Erro ao desinstalar aplicativo: $e');
     }
   }
 
@@ -444,9 +475,9 @@ class DeviceService {
       final response = await http.get(Uri.parse(apkUrl));
       await apkFile.writeAsBytes(response.bodyBytes);
       await platform.invokeMethod('installSystemApp', {'apkPath': apkFile.path});
-      print('Aplicativo $packageName atualizado');
+      logger.i('Aplicativo $packageName atualizado');
     } catch (e) {
-      print('Erro ao atualizar aplicativo: $e');
+      logger.e('Erro ao atualizar aplicativo: $e');
     }
   }
 
@@ -456,7 +487,7 @@ class DeviceService {
         'explanation': 'MDM Client requer permissões de administrador para gerenciar o dispositivo.'
       });
     } catch (e) {
-      print('Erro ao solicitar permissões de administrador: $e');
+      logger.e('Erro ao solicitar permissões de administrador: $e');
     }
   }
 
@@ -561,9 +592,25 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       this.batteryLevel = batteryLevel;
     });
 
-    final isAdminActive = await DeviceService.platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+    bool isAdminActive = false;
+    try {
+      isAdminActive = await DeviceService.platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Erro ao verificar permissões de administrador: $e');
+      if (e.code == 'MissingPluginException') {
+        deviceService.logger.e('MethodChannel não encontrado. Verifique a integração com MainActivity.kt');
+        setState(() {
+          statusMessage = 'Erro: Integração nativa ausente. Reinstale o aplicativo.';
+        });
+        return;
+      }
+    }
+
     if (!isAdminActive) {
-      await deviceService.requestDeviceAdmin();
+      final isDeviceOwner = await DeviceService.platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+      if (!isDeviceOwner) {
+        await deviceService.requestDeviceAdmin();
+      }
     }
     setState(() {
       isAdmin = isAdminActive;
@@ -649,7 +696,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     deviceService.deviceInfo['serial_number'] = serial;
     deviceService.deviceInfo['sector'] = sector;
     deviceService.deviceInfo['floor'] = floor;
-    deviceService.serverUrl = 'http://$serverHost:$serverPort';
+    deviceService.serverUrl = 'https://$serverHost:$serverPort';
     deviceService.authToken = token;
 
     setState(() {
