@@ -5,9 +5,7 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.IntentSender
-import android.content.pm.PackageInstaller
-import android.os.Build
+import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -17,6 +15,11 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.mdm_client_base/device_policy"
     private lateinit var devicePolicyManager: DevicePolicyManager
     private lateinit var adminComponent: ComponentName
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        NotificationChannel.createNotificationChannel(this)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -87,8 +90,8 @@ class MainActivity : FlutterActivity() {
                 }
                 "uninstallPackage" -> {
                     try {
-                        val packageName = call.argument<String>("packageName")
-                        if (packageName == null) {
+                        val packageNameArg = call.argument<String>("packageName")
+                        if (packageNameArg == null) {
                             result.error("INVALID_PACKAGE", "Package name is null", null)
                             return@setMethodCallHandler
                         }
@@ -96,15 +99,20 @@ class MainActivity : FlutterActivity() {
                             val packageInstaller = packageManager.packageInstaller
                             val intent = Intent(this, UninstallResultReceiver::class.java).apply {
                                 action = "com.example.mdm_client_base.UNINSTALL_RESULT"
-                                putExtra("packageName", packageName)
+                                putExtra("packageName", packageNameArg)
+                            }
+                            val flags = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                            } else {
+                                PendingIntent.FLAG_UPDATE_CURRENT
                             }
                             val pendingIntent = PendingIntent.getBroadcast(
                                 this,
-                                packageName.hashCode(),
+                                packageNameArg.hashCode(),
                                 intent,
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                flags
                             )
-                            packageInstaller.uninstall(packageName, pendingIntent.intentSender)
+                            packageInstaller.uninstall(packageNameArg, pendingIntent.intentSender)
                             result.success(true)
                         } else {
                             result.error("NOT_ADMIN", "App is not device owner", null)

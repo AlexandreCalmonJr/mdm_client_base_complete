@@ -21,56 +21,87 @@ void main() async {
 
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
+
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
-      isForegroundMode: true,
       autoStart: true,
+      isForegroundMode: true,
+      notificationChannelId: 'mdm_client_channel',
+      initialNotificationTitle: 'MDM Client Ativo',
+      initialNotificationContent: 'Monitorando dispositivo...',
+      foregroundServiceNotificationId: 888,
+      foregroundServiceTypes: [AndroidForegroundType.dataSync],
     ),
     iosConfiguration: IosConfiguration(
       autoStart: true,
       onForeground: onStart,
+      onBackground: onIosBackground,
     ),
   );
+  await service.startService();
+}
+
+@pragma('vm:entry-point')
+Future<bool> onIosBackground(ServiceInstance service) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  return true;
 }
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
-  // ✅ CRÍTICO: Configurar como foreground imediatamente
   if (service is AndroidServiceInstance) {
-    service.setAsForegroundService();
-    
-    // Listener para parar o serviço
-    service.on('stopService').listen((event) {
-      service.stopSelf();
+    service.on('setAsForeground').listen((event) {
+      service.setAsForegroundService();
+    });
+    service.on('setAsBackground').listen((event) {
+      service.setAsBackgroundService();
     });
   }
+
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
 
   final deviceService = DeviceService();
   await deviceService.initialize();
 
   final prefs = await SharedPreferences.getInstance();
   final dataInterval = prefs.getInt('data_interval') ?? 10;
-  final heartbeatInterval = prefs.getInt('heartbeat_interval') ?? 5;
+  final heartbeatInterval = prefs.getInt('heartbeat_interval') ?? 3;
   final commandCheckInterval = prefs.getInt('command_check_interval') ?? 1;
 
-  // ✅ TIMERS com notificação de foreground
+  print('Serviço em segundo plano iniciado: ${DateTime.now()}');
+
   Timer.periodic(Duration(minutes: dataInterval), (_) async {
-    await deviceService.sendDeviceData();
-    if (service is AndroidServiceInstance) {
-      service.setForegroundNotificationInfo(
-        title: "MDM Client Ativo",
-        content: "Dados enviados: ${DateTime.now().toString().substring(11, 16)}",
-      );
-    }
+    final result = await deviceService.sendDeviceData();
+    print('Dados enviados: $result');
   });
 
+  int heartbeatFailureCount = prefs.getInt('heartbeat_failure_count') ?? 0;
   Timer.periodic(Duration(minutes: heartbeatInterval), (_) async {
-    await deviceService.sendHeartbeat();
+    final result = await deviceService.sendHeartbeat();
+    print('Heartbeat: $result${heartbeatFailureCount > 0 ? ', Falhas: $heartbeatFailureCount' : ''}');
+    if (result != 'Heartbeat enviado com sucesso') {
+      heartbeatFailureCount++;
+      await prefs.setString('last_heartbeat_error', '$result às ${DateTime.now().toIso8601String()}');
+      await prefs.setInt('heartbeat_failure_count', heartbeatFailureCount);
+    } else {
+      heartbeatFailureCount = 0;
+      await prefs.remove('last_heartbeat_error');
+      await prefs.setInt('heartbeat_failure_count', heartbeatFailureCount);
+    }
   });
 
   Timer.periodic(Duration(minutes: commandCheckInterval), (_) async {
     await deviceService.checkForCommands();
+  });
+
+  Timer.periodic(const Duration(minutes: 1), (_) async {
+    if (service is AndroidServiceInstance && !await service.isForegroundService()) {
+      print('Serviço parou inesperadamente. Tentando reiniciar...');
+      await FlutterBackgroundService().startService();
+    }
   });
 }
 
@@ -102,13 +133,16 @@ class MDMClientApp extends StatelessWidget {
 
 class DeviceService {
   static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
-  String serverUrl = 'http://10.71.2.112:3000';
+  String serverUrl = 'http://mdm-server.local:3000';
   String authToken = '';
   final DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
   final Battery battery = Battery();
   final Connectivity connectivity = Connectivity();
   String? deviceId;
   Map<String, dynamic> deviceInfo = {};
+  static const int maxRetries = 3;
+  static const Duration retryDelay = Duration(seconds: 2);
+  static const Duration timeout = Duration(seconds: 10);
 
   Future<void> initialize() async {
     final androidInfo = await deviceInfoPlugin.androidInfo;
@@ -117,14 +151,14 @@ class DeviceService {
     final serialNumber = prefs.getString('serial_number') ?? androidInfo.serialNumber ?? 'N/A';
     final sector = prefs.getString('sector') ?? 'N/A';
     final floor = prefs.getString('floor') ?? 'N/A';
-    final serverIp = prefs.getString('server_ip') ?? '10.71.2.112';
+    final serverHost = prefs.getString('server_host') ?? 'mdm-server.local';
     final serverPort = prefs.getString('server_port') ?? '3000';
     final lastSync = prefs.getString('last_sync') ?? 'N/A';
     final authToken = prefs.getString('auth_token') ?? '';
     final batteryLevel = await battery.batteryLevel;
 
     this.authToken = authToken;
-    serverUrl = 'http://$serverIp:$serverPort';
+    serverUrl = 'http://$serverHost:$serverPort';
     deviceId = androidInfo.id;
     deviceInfo = {
       'device_name': androidInfo.device,
@@ -148,84 +182,196 @@ class DeviceService {
     return connectivityResult != ConnectivityResult.none;
   }
 
+  Future<bool> validateServerConnection(String host, String port) async {
+    try {
+      final response = await http
+          .get(
+            Uri.parse('http://$host:$port/api/devices'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $authToken',
+            },
+          )
+          .timeout(const Duration(seconds: 5));
+      return response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 403;
+    } catch (e) {
+      print('Erro ao validar conexão com o servidor: $e');
+      return false;
+    }
+  }
+
   Future<String> sendDeviceData() async {
     if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
-      return 'Sem conexão ou token inválido';
+      final message = 'Sem conexão ou token inválido';
+      print('Erro: $message');
+      return message;
     }
     await initialize();
 
-    try {
-      // ✅ CORRIGIDO: URL para /api/devices/data
-      final response = await http.post(
-        Uri.parse('$serverUrl/api/devices/data'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $authToken',
-        },
-        body: jsonEncode(deviceInfo),
-      );
-      if (response.statusCode == 200) {
-        final prefs = await SharedPreferences.getInstance();
-        final lastSync = DateTime.now().toIso8601String();
-        await prefs.setString('last_sync', lastSync);
-        deviceInfo['last_sync'] = lastSync;
-        print('Dados enviados com sucesso: ${response.statusCode}');
-        return 'Dados enviados com sucesso';
-      } else if (response.statusCode == 401) {
-        return 'Token inválido';
-      } else {
-        print('Erro ${response.statusCode}: ${response.body}');
-        return 'Erro ${response.statusCode}: ${response.body}';
+    int attempts = 0;
+    while (attempts < maxRetries) {
+      attempts++;
+      try {
+        final response = await http
+            .post(
+              Uri.parse('$serverUrl/api/devices/data'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $authToken',
+              },
+              body: jsonEncode(deviceInfo),
+            )
+            .timeout(timeout);
+
+        if (response.statusCode == 200) {
+          final prefs = await SharedPreferences.getInstance();
+          final lastSync = DateTime.now().toIso8601String();
+          await prefs.setString('last_sync', lastSync);
+          deviceInfo['last_sync'] = lastSync;
+          print('Dados enviados com sucesso: ${response.body}');
+          return 'Dados enviados com sucesso';
+        } else if (response.statusCode == 401) {
+          print('Erro 401: Token inválido');
+          return 'Token inválido';
+        } else if (response.statusCode == 403) {
+          print('Erro 403: Acesso negado');
+          return 'Acesso negado';
+        } else {
+          print('Erro ${response.statusCode}: ${response.body}');
+          return 'Erro ${response.statusCode}: ${response.body}';
+        }
+      } on TimeoutException {
+        print('Tentativa $attempts: Timeout ao conectar ao servidor');
+        if (attempts == maxRetries) {
+          return 'Falha: Tempo limite esgotado após $maxRetries tentativas';
+        }
+        await Future.delayed(retryDelay);
+      } on SocketException catch (e) {
+        print('Tentativa $attempts: SocketException: $e');
+        if (attempts == maxRetries) {
+          return 'Falha: Não foi possível conectar ao servidor ($e)';
+        }
+        await Future.delayed(retryDelay);
+      } catch (e) {
+        print('Tentativa $attempts: Erro inesperado: $e');
+        if (attempts == maxRetries) {
+          return 'Erro ao enviar dados: $e';
+        }
+        await Future.delayed(retryDelay);
       }
-    } catch (e) {
-      print('Erro ao enviar dados: $e');
-      return 'Erro ao enviar dados: $e';
     }
+    return 'Falha após $maxRetries tentativas';
   }
 
-  Future<void> sendHeartbeat() async {
-    if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) return;
-
-    try {
-      // ✅ CORRIGIDO: URL para /api/devices/heartbeat
-      final response = await http.post(
-        Uri.parse('$serverUrl/api/devices/heartbeat'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $authToken',
-        },
-        body: jsonEncode({'device_id': deviceId}),
-      );
-      print('Heartbeat enviado: ${response.statusCode}');
-    } catch (e) {
-      print('Erro ao enviar heartbeat: $e');
+  Future<String> sendHeartbeat() async {
+    if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
+      final message = 'Sem conexão ou token inválido';
+      print('Erro: $message');
+      return message;
     }
+
+    final host = serverUrl.replaceFirst('http://', '').split(':')[0];
+    final port = serverUrl.split(':').length > 2 ? serverUrl.split(':')[2] : '3000';
+    if (!await validateServerConnection(host, port)) {
+      final message = 'Servidor não acessível: $serverUrl';
+      print('Erro: $message');
+      return message;
+    }
+
+    int attempts = 0;
+    while (attempts < maxRetries) {
+      attempts++;
+      try {
+        final response = await http
+            .post(
+              Uri.parse('$serverUrl/api/devices/heartbeat'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $authToken',
+              },
+              body: jsonEncode({'device_id': deviceId}),
+            )
+            .timeout(timeout);
+
+        print('Heartbeat enviado: ${response.statusCode} ${response.body}');
+        return 'Heartbeat enviado com sucesso';
+      } on TimeoutException {
+        print('Tentativa $attempts: Timeout ao enviar heartbeat');
+        if (attempts == maxRetries) {
+          return 'Falha: Timeout após $maxRetries tentativas';
+        }
+        await Future.delayed(retryDelay);
+      } on SocketException catch (e) {
+        print('Tentativa $attempts: SocketException: $e');
+        if (attempts == maxRetries) {
+          return 'Falha: Não foi possível conectar ao servidor ($e)';
+        }
+        await Future.delayed(retryDelay);
+      } catch (e) {
+        print('Tentativa $attempts: Erro inesperado: $e');
+        if (attempts == maxRetries) {
+          return 'Erro ao enviar heartbeat: $e';
+        }
+        await Future.delayed(retryDelay);
+      }
+    }
+    return 'Falha após $maxRetries tentativas';
   }
 
   Future<void> checkForCommands() async {
-    if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) return;
+    if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
+      print('Erro: Sem conexão ou token inválido');
+      return;
+    }
 
-    try {
-      // ✅ CORRIGIDO: URL para /api/devices/commands com query parameter
-      final response = await http.get(
-        Uri.parse('$serverUrl/api/devices/commands?device_id=$deviceId'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $authToken',
-        },
-      );
-      if (response.statusCode == 200) {
-        final List<dynamic> commands = jsonDecode(response.body);
-        for (var commandData in commands) {
-          await executeCommand(
-            commandData['command_type'],
-            commandData['parameters']?['packageName'],
-            commandData['parameters']?['apkUrl'],
-          );
+    int attempts = 0;
+    while (attempts < maxRetries) {
+      attempts++;
+      try {
+        final response = await http
+            .get(
+              Uri.parse('$serverUrl/api/devices/commands?device_id=$deviceId'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $authToken',
+              },
+            )
+            .timeout(timeout);
+
+        if (response.statusCode == 200) {
+          final List<dynamic> commands = jsonDecode(response.body);
+          for (var commandData in commands) {
+            await executeCommand(
+              commandData['command_type'],
+              commandData['parameters']?['packageName'],
+              commandData['parameters']?['apkUrl'],
+            );
+          }
+          print('Comandos verificados: ${commands.length} comandos');
+          return;
+        } else {
+          print('Erro ${response.statusCode}: ${response.body}');
+          return;
         }
+      } on TimeoutException {
+        print('Tentativa $attempts: Timeout ao verificar comandos');
+        if (attempts == maxRetries) {
+          return;
+        }
+        await Future.delayed(retryDelay);
+      } on SocketException catch (e) {
+        print('Tentativa $attempts: SocketException: $e');
+        if (attempts == maxRetries) {
+          return;
+        }
+        await Future.delayed(retryDelay);
+      } catch (e) {
+        print('Tentativa $attempts: Erro inesperado: $e');
+        if (attempts == maxRetries) {
+          return;
+        }
+        await Future.delayed(retryDelay);
       }
-    } catch (e) {
-      print('Erro ao verificar comandos: $e');
     }
   }
 
@@ -313,6 +459,11 @@ class DeviceService {
       print('Erro ao solicitar permissões de administrador: $e');
     }
   }
+
+  Future<bool> isServiceRunning() async {
+    final service = FlutterBackgroundService();
+    return await service.isRunning();
+  }
 }
 
 class MDMClientHome extends StatefulWidget {
@@ -329,11 +480,14 @@ class _MDMClientHomeState extends State<MDMClientHome> {
   bool isAdmin = false;
   int batteryLevel = 0;
   String lastSync = 'N/A';
+  String lastHeartbeatError = '';
+  int heartbeatFailureCount = 0;
+  bool isServiceRunning = false;
   final TextEditingController imeiController = TextEditingController();
   final TextEditingController serialController = TextEditingController();
   final TextEditingController sectorController = TextEditingController();
   final TextEditingController floorController = TextEditingController();
-  final TextEditingController serverIpController = TextEditingController();
+  final TextEditingController serverHostController = TextEditingController();
   final TextEditingController serverPortController = TextEditingController();
   final TextEditingController dataIntervalController = TextEditingController();
   final TextEditingController heartbeatIntervalController = TextEditingController();
@@ -344,24 +498,57 @@ class _MDMClientHomeState extends State<MDMClientHome> {
   void initState() {
     super.initState();
     _initializeClient();
+    Timer.periodic(const Duration(seconds: 30), (_) async {
+      final running = await deviceService.isServiceRunning();
+      final prefs = await SharedPreferences.getInstance();
+      setState(() {
+        isServiceRunning = running;
+        lastHeartbeatError = prefs.getString('last_heartbeat_error') ?? '';
+        heartbeatFailureCount = prefs.getInt('heartbeat_failure_count') ?? 0;
+        if (!running) {
+          statusMessage = 'Serviço em segundo plano parado. Reinicie o app.';
+        }
+      });
+    });
   }
 
   Future<void> _initializeClient() async {
-    await deviceService.initialize();
-    final prefs = await SharedPreferences.getInstance();
     setState(() {
-      imeiController.text = prefs.getString('imei') ?? '';
-      serialController.text = prefs.getString('serial_number') ?? '';
-      sectorController.text = prefs.getString('sector') ?? '';
-      floorController.text = prefs.getString('floor') ?? '';
-      serverIpController.text = prefs.getString('server_ip') ?? '10.71.2.112';
-      serverPortController.text = prefs.getString('server_port') ?? '3000';
-      dataIntervalController.text = (prefs.getInt('data_interval') ?? 10).toString();
-      heartbeatIntervalController.text = (prefs.getInt('heartbeat_interval') ?? 5).toString();
-      commandCheckIntervalController.text = (prefs.getInt('command_check_interval') ?? 1).toString();
-      tokenController.text = prefs.getString('auth_token') ?? '';
-      lastSync = prefs.getString('last_sync') ?? 'N/A';
+      statusMessage = 'Inicializando...';
     });
+
+    final prefs = await SharedPreferences.getInstance();
+    final imei = prefs.getString('imei') ?? '';
+    final serial = prefs.getString('serial_number') ?? '';
+    final sector = prefs.getString('sector') ?? '';
+    final floor = prefs.getString('floor') ?? '';
+    final serverHost = prefs.getString('server_host') ?? 'mdm-server.local';
+    final serverPort = prefs.getString('server_port') ?? '3000';
+    final dataInterval = prefs.getInt('data_interval') ?? 10;
+    final heartbeatInterval = prefs.getInt('heartbeat_interval') ?? 3;
+    final commandCheckInterval = prefs.getInt('command_check_interval') ?? 1;
+    final token = prefs.getString('auth_token') ?? '';
+    final lastSync = prefs.getString('last_sync') ?? 'N/A';
+    final lastHeartbeatError = prefs.getString('last_heartbeat_error') ?? '';
+    final heartbeatFailureCount = prefs.getInt('heartbeat_failure_count') ?? 0;
+
+    setState(() {
+      imeiController.text = imei;
+      serialController.text = serial;
+      sectorController.text = sector;
+      floorController.text = floor;
+      serverHostController.text = serverHost;
+      serverPortController.text = serverPort;
+      dataIntervalController.text = dataInterval.toString();
+      heartbeatIntervalController.text = heartbeatInterval.toString();
+      commandCheckIntervalController.text = commandCheckInterval.toString();
+      tokenController.text = token;
+      this.lastSync = lastSync;
+      this.lastHeartbeatError = lastHeartbeatError;
+      this.heartbeatFailureCount = heartbeatFailureCount;
+    });
+
+    await deviceService.initialize();
 
     final connectivityResult = await deviceService.checkConnectivity();
     setState(() {
@@ -369,9 +556,9 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       statusMessage = isConnected ? 'Conectado à rede' : 'Sem conexão';
     });
 
-    batteryLevel = await deviceService.battery.batteryLevel;
+    final batteryLevel = await deviceService.battery.batteryLevel;
     setState(() {
-      batteryLevel = batteryLevel;
+      this.batteryLevel = batteryLevel;
     });
 
     final isAdminActive = await DeviceService.platform.invokeMethod('isDeviceOwnerOrProfileOwner');
@@ -382,6 +569,16 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       isAdmin = isAdminActive;
       statusMessage = isAdmin ? 'Permissões de administrador concedidas' : 'Permissões de administrador necessárias';
     });
+
+    isServiceRunning = await deviceService.isServiceRunning();
+    if (!isServiceRunning) {
+      final service = FlutterBackgroundService();
+      await service.startService();
+      setState(() {
+        isServiceRunning = true;
+        statusMessage = 'Serviço em segundo plano iniciado';
+      });
+    }
 
     if (isConnected && deviceService.deviceId != null && deviceService.authToken.isNotEmpty) {
       final result = await deviceService.sendDeviceData();
@@ -395,12 +592,6 @@ class _MDMClientHomeState extends State<MDMClientHome> {
         statusMessage = 'Por favor, insira um token de autenticação';
       });
     }
-    
-    // ✅ ADICIONADO: Iniciar o serviço após configuração
-    final service = FlutterBackgroundService();
-    if (!(await service.isRunning())) {
-      await service.startService();
-    }
   }
 
   Future<void> _saveManualData() async {
@@ -409,10 +600,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     final serial = serialController.text.trim();
     final sector = sectorController.text.trim();
     final floor = floorController.text.trim();
-    final serverIp = serverIpController.text.trim();
+    final serverHost = serverHostController.text.trim();
     final serverPort = serverPortController.text.trim();
     final dataInterval = int.tryParse(dataIntervalController.text.trim()) ?? 10;
-    final heartbeatInterval = int.tryParse(heartbeatIntervalController.text.trim()) ?? 5;
+    final heartbeatInterval = int.tryParse(heartbeatIntervalController.text.trim()) ?? 3;
     final commandCheckInterval = int.tryParse(commandCheckIntervalController.text.trim()) ?? 1;
     final token = tokenController.text.trim();
 
@@ -420,7 +611,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
         serial.isEmpty ||
         sector.isEmpty ||
         floor.isEmpty ||
-        serverIp.isEmpty ||
+        serverHost.isEmpty ||
         serverPort.isEmpty ||
         token.isEmpty) {
       setState(() {
@@ -434,15 +625,11 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       });
       return;
     }
-    if (!RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$').hasMatch(serverIp)) {
+
+    final isServerReachable = await deviceService.validateServerConnection(serverHost, serverPort);
+    if (!isServerReachable) {
       setState(() {
-        statusMessage = 'IP inválido (ex.: 192.168.1.100)';
-      });
-      return;
-    }
-    if (dataInterval < 1 || heartbeatInterval < 1 || commandCheckInterval < 1) {
-      setState(() {
-        statusMessage = 'Intervalos devem ser maiores que 0';
+        statusMessage = 'Não foi possível conectar ao servidor em $serverHost:$serverPort. Verifique o endereço e a rede.';
       });
       return;
     }
@@ -451,7 +638,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     await prefs.setString('serial_number', serial);
     await prefs.setString('sector', sector);
     await prefs.setString('floor', floor);
-    await prefs.setString('server_ip', serverIp);
+    await prefs.setString('server_host', serverHost);
     await prefs.setString('server_port', serverPort);
     await prefs.setInt('data_interval', dataInterval);
     await prefs.setInt('heartbeat_interval', heartbeatInterval);
@@ -462,7 +649,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     deviceService.deviceInfo['serial_number'] = serial;
     deviceService.deviceInfo['sector'] = sector;
     deviceService.deviceInfo['floor'] = floor;
-    deviceService.serverUrl = 'http://$serverIp:$serverPort';
+    deviceService.serverUrl = 'http://$serverHost:$serverPort';
     deviceService.authToken = token;
 
     setState(() {
@@ -472,6 +659,15 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     final result = await deviceService.sendDeviceData();
     setState(() {
       statusMessage = result;
+    });
+
+    final service = FlutterBackgroundService();
+    if (await service.isRunning()) {
+      service.invoke('stopService');
+    }
+    await service.startService();
+    setState(() {
+      isServiceRunning = true;
     });
   }
 
@@ -500,6 +696,29 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                 fontWeight: FontWeight.bold,
               ),
             ),
+            const SizedBox(height: 10),
+            Text(
+              'Serviço em segundo plano: ${isServiceRunning ? 'Ativo' : 'Inativo'}',
+              style: TextStyle(
+                fontSize: 16,
+                color: isServiceRunning ? Colors.green : Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            if (lastHeartbeatError.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Última falha de heartbeat: $lastHeartbeatError',
+                style: const TextStyle(fontSize: 14, color: Colors.red),
+              ),
+            ],
+            if (heartbeatFailureCount > 0) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Falhas consecutivas de heartbeat: $heartbeatFailureCount',
+                style: const TextStyle(fontSize: 14, color: Colors.red),
+              ),
+            ],
             const SizedBox(height: 20),
             Text(
               'Informações do Dispositivo',
@@ -566,11 +785,11 @@ class _MDMClientHomeState extends State<MDMClientHome> {
             ),
             const SizedBox(height: 10),
             TextField(
-              controller: serverIpController,
+              controller: serverHostController,
               decoration: InputDecoration(
-                labelText: 'IP do Servidor',
+                labelText: 'Host do Servidor (IP ou Hostname)',
                 border: const OutlineInputBorder(),
-                errorText: serverIpController.text.isEmpty ? 'Campo obrigatório' : null,
+                errorText: serverHostController.text.isEmpty ? 'Campo obrigatório' : null,
               ),
             ),
             const SizedBox(height: 10),
@@ -650,7 +869,26 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                   ),
                 ),
               ],
-            )
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () async {
+                final running = await deviceService.isServiceRunning();
+                if (!running) {
+                  final service = FlutterBackgroundService();
+                  await service.startService();
+                  setState(() {
+                    isServiceRunning = true;
+                    statusMessage = 'Serviço em segundo plano reiniciado';
+                  });
+                } else {
+                  setState(() {
+                    statusMessage = 'Serviço em segundo plano já está ativo';
+                  });
+                }
+              },
+              child: const Text('Verificar/Reiniciar Serviço'),
+            ),
           ],
         ),
       ),
