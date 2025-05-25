@@ -137,7 +137,7 @@ class MDMClientApp extends StatelessWidget {
 
 class DeviceService {
   static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
-  String serverUrl = 'https://mdm-server.local:3000';
+  String serverUrl = 'http://192.168.0.183:3000'; // Ajustado para HTTP e IP correto
   String authToken = '';
   final DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
   final Battery battery = Battery();
@@ -156,14 +156,14 @@ class DeviceService {
     final serialNumber = prefs.getString('serial_number') ?? androidInfo.serialNumber ?? 'N/A';
     final sector = prefs.getString('sector') ?? 'N/A';
     final floor = prefs.getString('floor') ?? 'N/A';
-    final serverHost = prefs.getString('server_host') ?? 'mdm-server.local';
+    final serverHost = prefs.getString('server_host') ?? '192.168.0.183'; // Ajustado
     final serverPort = prefs.getString('server_port') ?? '3000';
     final lastSync = prefs.getString('last_sync') ?? 'N/A';
     final authToken = prefs.getString('auth_token') ?? '';
     final batteryLevel = await battery.batteryLevel;
 
     this.authToken = authToken;
-    serverUrl = 'https://$serverHost:$serverPort';
+    serverUrl = 'http://$serverHost:$serverPort'; // Ajustado para HTTP
     deviceId = androidInfo.id;
     deviceInfo = {
       'device_name': androidInfo.device,
@@ -180,31 +180,35 @@ class DeviceService {
       'last_seen': DateTime.now().toIso8601String(),
       'last_sync': lastSync != 'N/A' ? lastSync : DateTime.now().toIso8601String(),
     };
+    logger.i('Inicializado: serverUrl=$serverUrl, deviceId=$deviceId');
   }
 
   Future<bool> checkConnectivity() async {
     final connectivityResult = await connectivity.checkConnectivity();
-    return connectivityResult != ConnectivityResult.none;
+    final isConnected = connectivityResult != ConnectivityResult.none;
+    logger.i('Conectividade: $isConnected');
+    return isConnected;
   }
 
   Future<bool> validateServerConnection(String host, String port) async {
+    final httpClient = http.Client();
     try {
-      final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
-      final httpClient = http.Client();
       final response = await httpClient
           .get(
-            Uri.parse('https://$host:$port/api/health'),
+            Uri.parse('http://$host:$port/api/devices'), // Ajustado para /api/devices
             headers: {
               'Content-Type': 'application/json',
               'Authorization': 'Bearer $authToken',
             },
           )
           .timeout(const Duration(seconds: 5));
-      httpClient.close();
-      return response.statusCode == 200;
+      logger.i('Validação do servidor: ${response.statusCode} ${response.body}');
+      return response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 403;
     } catch (e) {
       logger.e('Erro ao validar conexão com o servidor: $e');
       return false;
+    } finally {
+      httpClient.close();
     }
   }
 
@@ -216,7 +220,6 @@ class DeviceService {
     }
     await initialize();
 
-    final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
     final httpClient = http.Client();
     int attempts = 0;
     while (attempts < maxRetries) {
@@ -291,7 +294,6 @@ class DeviceService {
       return message;
     }
 
-    final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
     final httpClient = http.Client();
     int attempts = 0;
     while (attempts < maxRetries) {
@@ -341,7 +343,6 @@ class DeviceService {
       return;
     }
 
-    final client = HttpClient()..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
     final httpClient = http.Client();
     int attempts = 0;
     while (attempts < maxRetries) {
@@ -553,7 +554,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     final serial = prefs.getString('serial_number') ?? '';
     final sector = prefs.getString('sector') ?? '';
     final floor = prefs.getString('floor') ?? '';
-    final serverHost = prefs.getString('server_host') ?? 'mdm-server.local';
+    final serverHost = prefs.getString('server_host') ?? '192.168.0.183';
     final serverPort = prefs.getString('server_port') ?? '3000';
     final dataInterval = prefs.getInt('data_interval') ?? 10;
     final heartbeatInterval = prefs.getInt('heartbeat_interval') ?? 3;
@@ -595,6 +596,9 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     bool isAdminActive = false;
     try {
       isAdminActive = await DeviceService.platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+      if (!isAdminActive) {
+        await deviceService.requestDeviceAdmin();
+      }
     } on PlatformException catch (e) {
       deviceService.logger.e('Erro ao verificar permissões de administrador: $e');
       if (e.code == 'MissingPluginException') {
@@ -606,12 +610,6 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       }
     }
 
-    if (!isAdminActive) {
-      final isDeviceOwner = await DeviceService.platform.invokeMethod('isDeviceOwnerOrProfileOwner');
-      if (!isDeviceOwner) {
-        await deviceService.requestDeviceAdmin();
-      }
-    }
     setState(() {
       isAdmin = isAdminActive;
       statusMessage = isAdmin ? 'Permissões de administrador concedidas' : 'Permissões de administrador necessárias';
@@ -696,7 +694,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     deviceService.deviceInfo['serial_number'] = serial;
     deviceService.deviceInfo['sector'] = sector;
     deviceService.deviceInfo['floor'] = floor;
-    deviceService.serverUrl = 'https://$serverHost:$serverPort';
+    deviceService.serverUrl = 'http://$serverHost:$serverPort'; // Ajustado para HTTP
     deviceService.authToken = token;
 
     setState(() {
