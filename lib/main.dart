@@ -117,16 +117,51 @@ class MDMClientApp extends StatelessWidget {
     return MaterialApp(
       title: 'MDM Client',
       theme: ThemeData(
-        primarySwatch: Colors.blue,
-        scaffoldBackgroundColor: Colors.grey[100],
-        textTheme: const TextTheme(
-          bodyMedium: TextStyle(fontSize: 16),
+        primarySwatch: Colors.teal,
+        scaffoldBackgroundColor: Colors.grey[50],
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.teal,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          centerTitle: true,
+        ),
+        cardTheme: CardTheme(
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.symmetric(vertical: 8),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.teal),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.teal, width: 2),
+          ),
+          labelStyle: const TextStyle(color: Colors.teal),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.red),
+          ),
+          focusedErrorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.red, width: 2),
+          ),
         ),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-            textStyle: const TextStyle(fontSize: 16),
+            backgroundColor: Colors.teal,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+            textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
+        ),
+        textTheme: const TextTheme(
+          headlineSmall: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+          bodyMedium: TextStyle(fontSize: 16, color: Colors.black87),
+          bodySmall: TextStyle(fontSize: 14, color: Colors.grey),
         ),
       ),
       home: const MDMClientHome(),
@@ -137,7 +172,7 @@ class MDMClientApp extends StatelessWidget {
 
 class DeviceService {
   static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
-  String serverUrl = 'http://192.168.0.183:3000'; // Ajustado para HTTP e IP correto
+  String serverUrl = 'http://192.168.0.183:3000';
   String authToken = '';
   final DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
   final Battery battery = Battery();
@@ -156,14 +191,14 @@ class DeviceService {
     final serialNumber = prefs.getString('serial_number') ?? androidInfo.serialNumber ?? 'N/A';
     final sector = prefs.getString('sector') ?? 'N/A';
     final floor = prefs.getString('floor') ?? 'N/A';
-    final serverHost = prefs.getString('server_host') ?? '192.168.0.183'; // Ajustado
+    final serverHost = prefs.getString('server_host') ?? '192.168.0.183';
     final serverPort = prefs.getString('server_port') ?? '3000';
     final lastSync = prefs.getString('last_sync') ?? 'N/A';
     final authToken = prefs.getString('auth_token') ?? '';
     final batteryLevel = await battery.batteryLevel;
 
     this.authToken = authToken;
-    serverUrl = 'http://$serverHost:$serverPort'; // Ajustado para HTTP
+    serverUrl = 'http://$serverHost:$serverPort';
     deviceId = androidInfo.id;
     deviceInfo = {
       'device_name': androidInfo.device,
@@ -195,7 +230,7 @@ class DeviceService {
     try {
       final response = await httpClient
           .get(
-            Uri.parse('http://$host:$port/api/devices'), // Ajustado para /api/devices
+            Uri.parse('http://$host:$port/api/devices'),
             headers: {
               'Content-Type': 'application/json',
               'Authorization': 'Bearer $authToken',
@@ -694,7 +729,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     deviceService.deviceInfo['serial_number'] = serial;
     deviceService.deviceInfo['sector'] = sector;
     deviceService.deviceInfo['floor'] = floor;
-    deviceService.serverUrl = 'http://$serverHost:$serverPort'; // Ajustado para HTTP
+    deviceService.serverUrl = 'http://$serverHost:$serverPort';
     deviceService.authToken = token;
 
     setState(() {
@@ -725,216 +760,285 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('MDM Client'),
-        centerTitle: true,
-        elevation: 4,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _initializeClient,
+            tooltip: 'Recarregar Dados',
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Status: $statusMessage',
-              style: TextStyle(
-                fontSize: 16,
-                color: isConnected ? Colors.green : Colors.red,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'Serviço em segundo plano: ${isServiceRunning ? 'Ativo' : 'Inativo'}',
-              style: TextStyle(
-                fontSize: 16,
-                color: isServiceRunning ? Colors.green : Colors.red,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            if (lastHeartbeatError.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Text(
-                'Última falha de heartbeat: $lastHeartbeatError',
-                style: const TextStyle(fontSize: 14, color: Colors.red),
-              ),
-            ],
-            if (heartbeatFailureCount > 0) ...[
-              const SizedBox(height: 10),
-              Text(
-                'Falhas consecutivas de heartbeat: $heartbeatFailureCount',
-                style: const TextStyle(fontSize: 14, color: Colors.red),
-              ),
-            ],
-            const SizedBox(height: 20),
-            Text(
-              'Informações do Dispositivo',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 10),
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Nome: ${deviceService.deviceInfo['device_name'] ?? 'N/A'}'),
-                    Text('Modelo: ${deviceService.deviceInfo['device_model'] ?? 'N/A'}'),
-                    Text('ID: ${deviceService.deviceInfo['device_id'] ?? 'N/A'}'),
-                    Text('Bateria: $batteryLevel%'),
-                    Text('Administrador: ${isAdmin ? 'Ativo' : 'Inativo'}'),
-                    Text('Última Sincronização: $lastSyncFormatted'),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Configurações Manuais',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: imeiController,
-              decoration: InputDecoration(
-                labelText: 'IMEI',
-                border: const OutlineInputBorder(),
-                errorText: imeiController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: serialController,
-              decoration: InputDecoration(
-                labelText: 'Número de Série',
-                border: const OutlineInputBorder(),
-                errorText: serialController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: sectorController,
-              decoration: InputDecoration(
-                labelText: 'Setor',
-                border: const OutlineInputBorder(),
-                errorText: sectorController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: floorController,
-              decoration: InputDecoration(
-                labelText: 'Andar',
-                border: const OutlineInputBorder(),
-                errorText: floorController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: serverHostController,
-              decoration: InputDecoration(
-                labelText: 'Host do Servidor (IP ou Hostname)',
-                border: const OutlineInputBorder(),
-                errorText: serverHostController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: serverPortController,
-              decoration: InputDecoration(
-                labelText: 'Porta do Servidor',
-                border: const OutlineInputBorder(),
-                errorText: serverPortController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-              keyboardType: TextInputType.number,
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: dataIntervalController,
-              decoration: InputDecoration(
-                labelText: 'Intervalo de Dados (minutos)',
-                border: const OutlineInputBorder(),
-                errorText: dataIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-              keyboardType: TextInputType.number,
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: heartbeatIntervalController,
-              decoration: InputDecoration(
-                labelText: 'Intervalo de Heartbeat (minutos)',
-                border: const OutlineInputBorder(),
-                errorText: heartbeatIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-              keyboardType: TextInputType.number,
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: commandCheckIntervalController,
-              decoration: InputDecoration(
-                labelText: 'Intervalo de Verificação de Comandos (minutos)',
-                border: const OutlineInputBorder(),
-                errorText: commandCheckIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-              keyboardType: TextInputType.number,
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: tokenController,
-              decoration: InputDecoration(
-                labelText: 'Token de Autenticação',
-                border: const OutlineInputBorder(),
-                errorText: tokenController.text.isEmpty ? 'Campo obrigatório' : null,
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                    child: ElevatedButton(
-                      onPressed: _saveManualData,
-                      child: const Text('Salvar Dados'),
-                    ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Status Section
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Status do Sistema',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Icon(
+                            isConnected ? Icons.wifi : Icons.wifi_off,
+                            color: isConnected ? Colors.green : Colors.red,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Status: $statusMessage',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: isConnected ? Colors.green : Colors.red,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(
+                            isServiceRunning ? Icons.check_circle : Icons.error,
+                            color: isServiceRunning ? Colors.green : Colors.red,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Serviço: ${isServiceRunning ? 'Ativo' : 'Inativo'}',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: isServiceRunning ? Colors.green : Colors.red,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (lastHeartbeatError.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Última falha de heartbeat: $lastHeartbeatError',
+                          style: const TextStyle(fontSize: 14, color: Colors.red),
+                        ),
+                      ],
+                      if (heartbeatFailureCount > 0) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Falhas consecutivas: $heartbeatFailureCount',
+                          style: const TextStyle(fontSize: 14, color: Colors.red),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                    child: ElevatedButton(
-                      onPressed: () async {
-                        final result = await deviceService.sendDeviceData();
-                        setState(() {
-                          statusMessage = result;
-                        });
-                      },
-                      child: const Text('Enviar Dados Agora'),
-                    ),
+              ),
+              const SizedBox(height: 16),
+              // Device Info Section
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Informações do Dispositivo',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 12),
+                      Text('Nome: ${deviceService.deviceInfo['device_name'] ?? 'N/A'}'),
+                      Text('Modelo: ${deviceService.deviceInfo['device_model'] ?? 'N/A'}'),
+                      Text('ID: ${deviceService.deviceInfo['device_id'] ?? 'N/A'}'),
+                      Text('Bateria: $batteryLevel%'),
+                      Text('Administrador: ${isAdmin ? 'Ativo' : 'Inativo'}'),
+                      Text('Última Sincronização: $lastSyncFormatted'),
+                    ],
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            ElevatedButton(
-              onPressed: () async {
-                final running = await deviceService.isServiceRunning();
-                if (!running) {
-                  final service = FlutterBackgroundService();
-                  await service.startService();
-                  setState(() {
-                    isServiceRunning = true;
-                    statusMessage = 'Serviço em segundo plano reiniciado';
-                  });
-                } else {
-                  setState(() {
-                    statusMessage = 'Serviço em segundo plano já está ativo';
-                  });
-                }
-              },
-              child: const Text('Verificar/Reiniciar Serviço'),
-            ),
-          ],
+              ),
+              const SizedBox(height: 16),
+              // Configuration Section
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Configurações Manuais',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: imeiController,
+                        decoration: InputDecoration(
+                          labelText: 'IMEI',
+                          prefixIcon: const Icon(Icons.perm_device_information),
+                          errorText: imeiController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: serialController,
+                        decoration: InputDecoration(
+                          labelText: 'Número de Série',
+                          prefixIcon: const Icon(Icons.confirmation_number),
+                          errorText: serialController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: sectorController,
+                        decoration: InputDecoration(
+                          labelText: 'Setor',
+                          prefixIcon: const Icon(Icons.business),
+                          errorText: sectorController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: floorController,
+                        decoration: InputDecoration(
+                          labelText: 'Andar',
+                          prefixIcon: const Icon(Icons.stairs),
+                          errorText: floorController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: serverHostController,
+                        decoration: InputDecoration(
+                          labelText: 'Host do Servidor',
+                          prefixIcon: const Icon(Icons.dns),
+                          errorText: serverHostController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: serverPortController,
+                        decoration: InputDecoration(
+                          labelText: 'Porta do Servidor',
+                          prefixIcon: const Icon(Icons.network_check),
+                          errorText: serverPortController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: dataIntervalController,
+                        decoration: InputDecoration(
+                          labelText: 'Intervalo de Dados (minutos)',
+                          prefixIcon: const Icon(Icons.timer),
+                          errorText: dataIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: heartbeatIntervalController,
+                        decoration: InputDecoration(
+                          labelText: 'Intervalo de Heartbeat (minutos)',
+                          prefixIcon: const Icon(Icons.favorite),
+                          errorText: heartbeatIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: commandCheckIntervalController,
+                        decoration: InputDecoration(
+                          labelText: 'Intervalo de Verificação de Comandos (minutos)',
+                          prefixIcon: const Icon(Icons.checklist),
+                          errorText: commandCheckIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: tokenController,
+                        decoration: InputDecoration(
+                          labelText: 'Token de Autenticação',
+                          prefixIcon: const Icon(Icons.vpn_key),
+                          errorText: tokenController.text.isEmpty ? 'Campo obrigatório' : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Action Buttons
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.save),
+                        label: const Text('Salvar Dados'),
+                        onPressed: _saveManualData,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.send),
+                        label: const Text('Enviar Dados'),
+                        onPressed: () async {
+                          final result = await deviceService.sendDeviceData();
+                          setState(() {
+                            statusMessage = result;
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Center(
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.restart_alt),
+                  label: const Text('Verificar/Reiniciar Serviço'),
+                  onPressed: () async {
+                    final running = await deviceService.isServiceRunning();
+                    if (!running) {
+                      final service = FlutterBackgroundService();
+                      await service.startService();
+                      setState(() {
+                        isServiceRunning = true;
+                        statusMessage = 'Serviço em segundo plano reiniciado';
+                      });
+                    } else {
+                      setState(() {
+                        statusMessage = 'Serviço em segundo plano já está ativo';
+                      });
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Developer Info
+              Center(
+                child: Text(
+                  'Desenvolvido por: Alexandre Calmon TI-BA\nVersão: 1.0.0\nalexandre.calmon@hapvida.com.br',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
