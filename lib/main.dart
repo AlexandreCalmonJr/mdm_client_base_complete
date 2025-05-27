@@ -11,14 +11,20 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wifi_scan/wifi_scan.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeService();
+  
   runApp(const MDMClientApp());
 }
+
+
 
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
@@ -28,10 +34,6 @@ Future<void> initializeService() async {
       onStart: onStart,
       autoStart: true,
       isForegroundMode: true,
-      notificationChannelId: 'mdm_client_channel',
-      initialNotificationTitle: 'MDM Client Ativo',
-      initialNotificationContent: 'Monitorando dispositivo...',
-      foregroundServiceNotificationId: 888,
       foregroundServiceTypes: [AndroidForegroundType.dataSync],
     ),
     iosConfiguration: IosConfiguration(
@@ -52,10 +54,15 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   final logger = Logger();
+  
   if (service is AndroidServiceInstance) {
+    // Aguardar um pouco antes de configurar os listeners
+    await Future.delayed(const Duration(milliseconds: 1000));
+    
     service.on('setAsForeground').listen((event) {
       service.setAsForegroundService();
     });
+    
     service.on('setAsBackground').listen((event) {
       service.setAsBackgroundService();
     });
@@ -64,7 +71,7 @@ void onStart(ServiceInstance service) async {
   service.on('stopService').listen((event) {
     service.stopSelf();
   });
-
+  
   final deviceService = DeviceService();
   await deviceService.initialize();
   final prefs = await SharedPreferences.getInstance();
@@ -77,7 +84,8 @@ void onStart(ServiceInstance service) async {
   int heartbeatFailureCount = prefs.getInt('heartbeat_failure_count') ?? 0;
   Timer.periodic(const Duration(minutes: 1), (_) async {
     final now = DateTime.now();
-    final minutesSinceStart = now.difference(DateTime(now.year, now.month, now.day)).inMinutes;
+    final minutesSinceStart =
+        now.difference(DateTime(now.year, now.month, now.day)).inMinutes;
 
     if (minutesSinceStart % dataInterval == 0) {
       final result = await deviceService.sendDeviceData();
@@ -86,10 +94,15 @@ void onStart(ServiceInstance service) async {
 
     if (minutesSinceStart % heartbeatInterval == 0) {
       final result = await deviceService.sendHeartbeat();
-      logger.i('Heartbeat: $result${heartbeatFailureCount > 0 ? ', Falhas: $heartbeatFailureCount' : ''}');
+      logger.i(
+        'Heartbeat: $result${heartbeatFailureCount > 0 ? ', Falhas: $heartbeatFailureCount' : ''}',
+      );
       if (result != 'Heartbeat enviado com sucesso') {
         heartbeatFailureCount++;
-        await prefs.setString('last_heartbeat_error', '$result às ${DateTime.now().toIso8601String()}');
+        await prefs.setString(
+          'last_heartbeat_error',
+          '$result às ${DateTime.now().toIso8601String()}',
+        );
         await prefs.setInt('heartbeat_failure_count', heartbeatFailureCount);
       } else {
         heartbeatFailureCount = 0;
@@ -102,11 +115,69 @@ void onStart(ServiceInstance service) async {
       await deviceService.checkForCommands();
     }
 
-    if (service is AndroidServiceInstance && !await service.isForegroundService()) {
+    if (service is AndroidServiceInstance &&
+        !await service.isForegroundService()) {
       logger.w('Serviço parou inesperadamente. Tentando reiniciar...');
       await FlutterBackgroundService().startService();
     }
   });
+}
+
+class QRCodeScannerScreen extends StatefulWidget {
+  const QRCodeScannerScreen({super.key});
+
+  @override
+  _QRCodeScannerScreenState createState() => _QRCodeScannerScreenState();
+}
+
+class _QRCodeScannerScreenState extends State<QRCodeScannerScreen> {
+  MobileScannerController controller = MobileScannerController();
+  String scannedUrl = '';
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Escanear QR Code'),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            flex: 5,
+            child: MobileScanner(
+              controller: controller,
+              onDetect: (capture) {
+                final List<Barcode> barcodes = capture.barcodes;
+                for (final barcode in barcodes) {
+                  if (barcode.rawValue != null) {
+                    setState(() {
+                      scannedUrl = barcode.rawValue!;
+                    });
+                    Navigator.pop(context, scannedUrl);
+                  }
+                }
+              },
+            ),
+          ),
+          Expanded(
+            flex: 1,
+            child: Center(
+              child: Text(
+                scannedUrl.isEmpty ? 'Escaneie o QR Code' : 'URL: $scannedUrl',
+                style: const TextStyle(fontSize: 16),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class MDMClientApp extends StatelessWidget {
@@ -125,9 +196,11 @@ class MDMClientApp extends StatelessWidget {
           elevation: 0,
           centerTitle: true,
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           elevation: 4,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           margin: const EdgeInsets.symmetric(vertical: 8),
         ),
         inputDecorationTheme: InputDecorationTheme(
@@ -154,24 +227,94 @@ class MDMClientApp extends StatelessWidget {
             backgroundColor: Colors.teal,
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
-            textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            textStyle: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
           ),
         ),
         textTheme: const TextTheme(
-          headlineSmall: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+          headlineSmall: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: Colors.black87,
+          ),
           bodyMedium: TextStyle(fontSize: 16, color: Colors.black87),
           bodySmall: TextStyle(fontSize: 14, color: Colors.grey),
         ),
       ),
-      home: const MDMClientHome(),
+      home: const LoginScreen(),
       debugShowCheckedModeBanner: false,
     );
   }
 }
 
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  _LoginScreenState createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController passwordController = TextEditingController();
+  String errorMessage = '';
+
+  Future<void> _login() async {
+    final prefs = await SharedPreferences.getInstance();
+    final storedPassword = prefs.getString('app_password') ?? 'hap@2025';
+
+    if (passwordController.text == storedPassword) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const MDMClientHome()),
+      );
+    } else {
+      setState(() {
+        errorMessage = 'Senha incorreta';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('MDM Client - Login')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Digite a senha para acessar o MDM Client',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 24),
+            TextField(
+              controller: passwordController,
+              decoration: InputDecoration(
+                labelText: 'Senha',
+                prefixIcon: const Icon(Icons.lock),
+                errorText: errorMessage.isNotEmpty ? errorMessage : null,
+              ),
+              obscureText: true,
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(onPressed: _login, child: const Text('Entrar')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class DeviceService {
-  static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
+  static const platform = MethodChannel(
+    'com.example.mdm_client_base/device_policy',
+  );
   String serverUrl = 'http://192.168.0.183:3000';
   String authToken = '';
   final DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
@@ -184,11 +327,38 @@ class DeviceService {
   static const Duration retryDelay = Duration(seconds: 2);
   static const Duration timeout = Duration(seconds: 10);
 
+  /// Disable unwanted apps by their package names.
+  Future<String> disableUnwantedApps(List<String> packageNames) async {
+    try {
+      final isAdmin = await platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+      if (!isAdmin) {
+        logger.w('Permissões de administrador necessárias para desabilitar aplicativos');
+        await requestDeviceAdmin();
+        return 'Permissões de administrador necessárias';
+      }
+      for (final packageName in packageNames) {
+        await platform.invokeMethod('disablePackage', {'packageName': packageName});
+        logger.i('Aplicativo $packageName desabilitado');
+      }
+      return 'Aplicativos desabilitados com sucesso';
+    } catch (e) {
+      logger.e('Erro ao desabilitar aplicativos: $e');
+      return 'Erro ao desabilitar aplicativos: $e';
+    }
+  }
+
+  /// Checks if the device has an active network connection.
+  Future<bool> checkConnectivity() async {
+    var connectivityResult = await connectivity.checkConnectivity();
+    return connectivityResult != ConnectivityResult.none;
+  }
+
   Future<void> initialize() async {
     final androidInfo = await deviceInfoPlugin.androidInfo;
     final prefs = await SharedPreferences.getInstance();
     final imei = prefs.getString('imei') ?? androidInfo.serialNumber ?? 'N/A';
-    final serialNumber = prefs.getString('serial_number') ?? androidInfo.serialNumber ?? 'N/A';
+    final serialNumber =
+        prefs.getString('serial_number') ?? androidInfo.serialNumber ?? 'N/A';
     final sector = prefs.getString('sector') ?? 'N/A';
     final floor = prefs.getString('floor') ?? 'N/A';
     final serverHost = prefs.getString('server_host') ?? '192.168.0.183';
@@ -197,32 +367,126 @@ class DeviceService {
     final authToken = prefs.getString('auth_token') ?? '';
     final batteryLevel = await battery.batteryLevel;
 
+    // Obter IP Address
+    String? ipAddress;
+    try {
+      final interfaces = await NetworkInterface.list(includeLoopback: false);
+      for (var interface in interfaces) {
+        for (var addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4 &&
+              !addr.address.startsWith('127.')) {
+            ipAddress = addr.address;
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      logger.e('Erro ao obter IP Address: $e');
+      ipAddress = 'N/A';
+    }
+
+    // Obter MAC Address do dispositivo
+    String? macAddress;
+    try {
+      macAddress = await platform.invokeMethod('getMacAddress') ?? 'N/A';
+    } catch (e) {
+      logger.e('Erro ao obter MAC Address: $e');
+      macAddress = 'N/A';
+    }
+
+    // Obter informações de Wi-Fi
+    List<Map<String, String>> wifiList = [];
+    Map<String, String> connectedWifi = {};
+    
+
+    try {
+      var locationStatus = await Permission.location.request();
+      if (!locationStatus.isGranted) {
+        logger.e('Permissão de localização negada.');
+      } else {
+        final wifiScanResult = await WiFiScan.instance.getScannedResults();
+        wifiList =
+            wifiScanResult
+                .map((result) => {'ssid': result.ssid, 'bssid': result.bssid})
+                .toList();
+
+        final wifiInfo = await platform.invokeMethod('getWifiInfo');
+        if (wifiInfo != null) {
+          connectedWifi = {
+            'ssid': wifiInfo['ssid']?.replaceAll('"', '') ?? 'N/A',
+            'bssid':
+                wifiInfo['bssid']?.toLowerCase() ??
+                'N/A', // Normalizar para minúsculas
+          };
+        }
+
+        // Mapeamento de setor e andar com base no BSSID (MAC Address do rádio Wi-Fi)
+        
+      }
+    } catch (e) {
+      logger.e('Erro ao obter informações de Wi-Fi: $e');
+    }
+
     this.authToken = authToken;
     serverUrl = 'http://$serverHost:$serverPort';
     deviceId = androidInfo.id;
     deviceInfo = {
-      'device_name': androidInfo.device,
+      'device_name': androidInfo.name,
       'device_model': androidInfo.model,
       'device_id': androidInfo.id,
       'serial_number': serialNumber,
       'imei': imei,
       'sector': sector,
       'floor': floor,
-      'mac_address': 'N/A',
-      'ip_address': 'N/A',
-      'network': 'N/A',
+      'mac_address': macAddress,
+      'ip_address': ipAddress,
+      'network': connectedWifi['ssid'] ?? 'N/A',
       'battery': batteryLevel,
       'last_seen': DateTime.now().toIso8601String(),
-      'last_sync': lastSync != 'N/A' ? lastSync : DateTime.now().toIso8601String(),
+      'last_sync':
+          lastSync != 'N/A' ? lastSync : DateTime.now().toIso8601String(),
+      'wifi_list': wifiList,
+      'connected_wifi': connectedWifi,
+      
+      
+
+       // Versão do aplicativo, pode ser dinâmico
     };
     logger.i('Inicializado: serverUrl=$serverUrl, deviceId=$deviceId');
+
+    // Bloquear configurações (parte já implementada anteriormente)
+    await restrictSettings();
   }
 
-  Future<bool> checkConnectivity() async {
-    final connectivityResult = await connectivity.checkConnectivity();
-    final isConnected = connectivityResult != ConnectivityResult.none;
-    logger.i('Conectividade: $isConnected');
-    return isConnected;
+  /// Restringe o acesso às configurações do dispositivo (stub para implementação futura)
+  Future<void> restrictSettings() async {
+    try {
+      await platform.invokeMethod('restrictSettings');
+      logger.i('Configurações restritas com sucesso.');
+    } catch (e) {
+      logger.w('Restrição de configurações não implementada ou falhou: $e');
+    }
+  }
+
+  Future<void> unrestrictSettings() async {
+    try {
+      final isAdmin = await platform.invokeMethod(
+        'isDeviceOwnerOrProfileOwner',
+      );
+      if (!isAdmin) {
+        logger.w(
+          'Permissões de administrador necessárias para desbloquear configurações',
+        );
+        await requestDeviceAdmin();
+        return;
+      }
+
+      // Desbloquear acesso às configurações
+      await platform.invokeMethod('restrictSettings', {'restrict': false});
+      logger.i('Configurações do Android desbloqueadas');
+    } catch (e) {
+      logger.e('Erro ao desbloquear configurações: $e');
+    }
   }
 
   Future<bool> validateServerConnection(String host, String port) async {
@@ -237,8 +501,12 @@ class DeviceService {
             },
           )
           .timeout(const Duration(seconds: 5));
-      logger.i('Validação do servidor: ${response.statusCode} ${response.body}');
-      return response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 403;
+      logger.i(
+        'Validação do servidor: ${response.statusCode} ${response.body}',
+      );
+      return response.statusCode == 200 ||
+          response.statusCode == 401 ||
+          response.statusCode == 403;
     } catch (e) {
       logger.e('Erro ao validar conexão com o servidor: $e');
       return false;
@@ -432,14 +700,20 @@ class DeviceService {
     }
   }
 
-  Future<void> executeCommand(String command, String? packageName, String? apkUrl) async {
+  Future<void> executeCommand(
+    String command,
+    String? packageName,
+    String? apkUrl,
+  ) async {
     bool isAdmin;
     try {
       isAdmin = await platform.invokeMethod('isDeviceOwnerOrProfileOwner');
     } on PlatformException catch (e) {
       logger.e('Erro ao verificar permissões de administrador: $e');
       if (e.code == 'MissingPluginException') {
-        logger.e('MethodChannel não encontrado. Verifique a integração com MainActivity.kt');
+        logger.e(
+          'MethodChannel não encontrado. Verifique a integração com MainActivity.kt',
+        );
       }
       return;
     }
@@ -482,22 +756,95 @@ class DeviceService {
     }
   }
 
-  Future<void> installApp(String packageName, String apkUrl) async {
+  Future<String> installAppFromUrl(
+    String apkUrl, {
+    Function(double)? onProgress,
+  }) async {
+    try {
+      final packageName = apkUrl.split('/').last.replaceAll('.apk', '');
+      if (packageName.isEmpty) {
+        return 'Erro: Nome do pacote inválido na URL';
+      }
+
+      if (!Uri.parse(apkUrl).isAbsolute || !apkUrl.endsWith('.apk')) {
+        return 'Erro: URL inválida. Deve ser uma URL absoluta terminando com .apk';
+      }
+
+      final isAdmin = await platform.invokeMethod(
+        'isDeviceOwnerOrProfileOwner',
+      );
+      if (!isAdmin) {
+        logger.w(
+          'Permissões de administrador necessárias para instalar aplicativos',
+        );
+        await requestDeviceAdmin();
+        return 'Permissões de administrador necessárias';
+      }
+
+      return await installApp(packageName, apkUrl, onProgress: onProgress);
+    } catch (e) {
+      logger.e('Erro ao instalar aplicativo a partir da URL $apkUrl: $e');
+      return 'Erro ao instalar aplicativo: $e';
+    }
+  }
+
+  Future<String> installApp(
+    String packageName,
+    String apkUrl, {
+    Function(double)? onProgress,
+  }) async {
     try {
       final directory = await getTemporaryDirectory();
       final apkFile = File('${directory.path}/$packageName.apk');
-      final response = await http.get(Uri.parse(apkUrl));
-      await apkFile.writeAsBytes(response.bodyBytes);
-      await platform.invokeMethod('installSystemApp', {'apkPath': apkFile.path});
-      logger.i('Aplicativo $packageName instalado');
+      logger.i('Baixando APK de $apkUrl para ${apkFile.path}');
+
+      final request = http.Request('GET', Uri.parse(apkUrl));
+      final response = await http.Client().send(request);
+      if (response.statusCode != 200) {
+        logger.e('Erro ao baixar APK: Status ${response.statusCode}');
+        throw Exception('Erro ao baixar APK: Status ${response.statusCode}');
+      }
+
+      var totalBytes = response.contentLength ?? 0;
+      var receivedBytes = 0;
+      final fileStream = apkFile.openWrite();
+      await response.stream
+          .listen(
+            (data) {
+              receivedBytes += data.length;
+              if (totalBytes > 0 && onProgress != null) {
+                onProgress((receivedBytes / totalBytes) * 100);
+              }
+              fileStream.add(data);
+            },
+            onDone: () async {
+              await fileStream.close();
+              logger.i('APK baixado com sucesso. Instalando...');
+              await platform.invokeMethod('installSystemApp', {
+                'apkPath': apkFile.path,
+              });
+              logger.i('Aplicativo $packageName instalado com sucesso');
+            },
+            onError: (e) {
+              logger.e('Erro ao baixar APK: $e');
+              throw Exception('Erro ao baixar APK: $e');
+            },
+            cancelOnError: true,
+          )
+          .asFuture();
+
+      return 'Aplicativo $packageName instalado com sucesso';
     } catch (e) {
       logger.e('Erro ao instalar aplicativo: $e');
+      rethrow;
     }
   }
 
   Future<void> uninstallApp(String packageName) async {
     try {
-      await platform.invokeMethod('uninstallPackage', {'packageName': packageName});
+      await platform.invokeMethod('uninstallPackage', {
+        'packageName': packageName,
+      });
       logger.i('Aplicativo $packageName desinstalado');
     } catch (e) {
       logger.e('Erro ao desinstalar aplicativo: $e');
@@ -510,7 +857,9 @@ class DeviceService {
       final apkFile = File('${directory.path}/$packageName.apk');
       final response = await http.get(Uri.parse(apkUrl));
       await apkFile.writeAsBytes(response.bodyBytes);
-      await platform.invokeMethod('installSystemApp', {'apkPath': apkFile.path});
+      await platform.invokeMethod('installSystemApp', {
+        'apkPath': apkFile.path,
+      });
       logger.i('Aplicativo $packageName atualizado');
     } catch (e) {
       logger.e('Erro ao atualizar aplicativo: $e');
@@ -520,7 +869,8 @@ class DeviceService {
   Future<void> requestDeviceAdmin() async {
     try {
       await platform.invokeMethod('requestDeviceAdmin', {
-        'explanation': 'MDM Client requer permissões de administrador para gerenciar o dispositivo.'
+        'explanation':
+            'MDM Client requer permissões de administrador para gerenciar o dispositivo.',
       });
     } catch (e) {
       logger.e('Erro ao solicitar permissões de administrador: $e');
@@ -550,6 +900,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
   String lastHeartbeatError = '';
   int heartbeatFailureCount = 0;
   bool isServiceRunning = false;
+  double installProgress = 0.0;
+  bool isInstalling = false;
+  bool isUninstalling = false;
+  bool isUpdating = false;
   final TextEditingController imeiController = TextEditingController();
   final TextEditingController serialController = TextEditingController();
   final TextEditingController sectorController = TextEditingController();
@@ -557,10 +911,15 @@ class _MDMClientHomeState extends State<MDMClientHome> {
   final TextEditingController serverHostController = TextEditingController();
   final TextEditingController serverPortController = TextEditingController();
   final TextEditingController dataIntervalController = TextEditingController();
-  final TextEditingController heartbeatIntervalController = TextEditingController();
-  final TextEditingController commandCheckIntervalController = TextEditingController();
+  final TextEditingController heartbeatIntervalController =
+      TextEditingController();
+  final TextEditingController commandCheckIntervalController =
+      TextEditingController();
   final TextEditingController tokenController = TextEditingController();
-
+  final TextEditingController apkUrlController = TextEditingController();
+  List<String> unwantedApps = ['com.android.chrome', 'com.example.unwantedapp']; // Lista inicial
+  final TextEditingController appToDisableController = TextEditingController();
+  
   @override
   void initState() {
     super.initState();
@@ -630,16 +989,23 @@ class _MDMClientHomeState extends State<MDMClientHome> {
 
     bool isAdminActive = false;
     try {
-      isAdminActive = await DeviceService.platform.invokeMethod('isDeviceOwnerOrProfileOwner');
+      isAdminActive = await DeviceService.platform.invokeMethod(
+        'isDeviceOwnerOrProfileOwner',
+      );
       if (!isAdminActive) {
         await deviceService.requestDeviceAdmin();
       }
     } on PlatformException catch (e) {
-      deviceService.logger.e('Erro ao verificar permissões de administrador: $e');
+      deviceService.logger.e(
+        'Erro ao verificar permissões de administrador: $e',
+      );
       if (e.code == 'MissingPluginException') {
-        deviceService.logger.e('MethodChannel não encontrado. Verifique a integração com MainActivity.kt');
+        deviceService.logger.e(
+          'MethodChannel não encontrado. Verifique a integração com MainActivity.kt',
+        );
         setState(() {
-          statusMessage = 'Erro: Integração nativa ausente. Reinstale o aplicativo.';
+          statusMessage =
+              'Erro: Integração nativa ausente. Reinstale o aplicativo.';
         });
         return;
       }
@@ -647,7 +1013,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
 
     setState(() {
       isAdmin = isAdminActive;
-      statusMessage = isAdmin ? 'Permissões de administrador concedidas' : 'Permissões de administrador necessárias';
+      statusMessage =
+          isAdmin
+              ? 'Permissões de administrador concedidas'
+              : 'Permissões de administrador necessárias';
     });
 
     isServiceRunning = await deviceService.isServiceRunning();
@@ -660,7 +1029,9 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       });
     }
 
-    if (isConnected && deviceService.deviceId != null && deviceService.authToken.isNotEmpty) {
+    if (isConnected &&
+        deviceService.deviceId != null &&
+        deviceService.authToken.isNotEmpty) {
       final result = await deviceService.sendDeviceData();
       setState(() {
         statusMessage = result;
@@ -683,8 +1054,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     final serverHost = serverHostController.text.trim();
     final serverPort = serverPortController.text.trim();
     final dataInterval = int.tryParse(dataIntervalController.text.trim()) ?? 10;
-    final heartbeatInterval = int.tryParse(heartbeatIntervalController.text.trim()) ?? 3;
-    final commandCheckInterval = int.tryParse(commandCheckIntervalController.text.trim()) ?? 1;
+    final heartbeatInterval =
+        int.tryParse(heartbeatIntervalController.text.trim()) ?? 3;
+    final commandCheckInterval =
+        int.tryParse(commandCheckIntervalController.text.trim()) ?? 1;
     final token = tokenController.text.trim();
 
     if (imei.isEmpty ||
@@ -706,10 +1079,14 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       return;
     }
 
-    final isServerReachable = await deviceService.validateServerConnection(serverHost, serverPort);
+    final isServerReachable = await deviceService.validateServerConnection(
+      serverHost,
+      serverPort,
+    );
     if (!isServerReachable) {
       setState(() {
-        statusMessage = 'Não foi possível conectar ao servidor em $serverHost:$serverPort. Verifique o endereço e a rede.';
+        statusMessage =
+            'Não foi possível conectar ao servidor em $serverHost:$serverPort. Verifique o endereço e a rede.';
       });
       return;
     }
@@ -724,6 +1101,12 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     await prefs.setInt('heartbeat_interval', heartbeatInterval);
     await prefs.setInt('command_check_interval', commandCheckInterval);
     await prefs.setString('auth_token', token);
+
+    // Definir uma senha padrão se não existir
+    final currentPassword = prefs.getString('app_password');
+    if (currentPassword == null || currentPassword.isEmpty) {
+      await prefs.setString('app_password', '123456'); // Senha padrão
+    }
 
     deviceService.deviceInfo['imei'] = imei;
     deviceService.deviceInfo['serial_number'] = serial;
@@ -753,9 +1136,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
 
   @override
   Widget build(BuildContext context) {
-    final lastSyncFormatted = lastSync != 'N/A'
-        ? DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(lastSync))
-        : 'N/A';
+    final lastSyncFormatted =
+        lastSync != 'N/A'
+            ? DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(lastSync))
+            : 'N/A';
 
     return Scaffold(
       appBar: AppBar(
@@ -783,7 +1167,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                     children: [
                       const Text(
                         'Status do Sistema',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       Row(
@@ -817,7 +1204,8 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                             'Serviço: ${isServiceRunning ? 'Ativo' : 'Inativo'}',
                             style: TextStyle(
                               fontSize: 16,
-                              color: isServiceRunning ? Colors.green : Colors.red,
+                              color:
+                                  isServiceRunning ? Colors.green : Colors.red,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -827,14 +1215,20 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         const SizedBox(height: 8),
                         Text(
                           'Última falha de heartbeat: $lastHeartbeatError',
-                          style: const TextStyle(fontSize: 14, color: Colors.red),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.red,
+                          ),
                         ),
                       ],
                       if (heartbeatFailureCount > 0) ...[
                         const SizedBox(height: 8),
                         Text(
                           'Falhas consecutivas: $heartbeatFailureCount',
-                          style: const TextStyle(fontSize: 14, color: Colors.red),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.red,
+                          ),
                         ),
                       ],
                     ],
@@ -851,12 +1245,21 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                     children: [
                       const Text(
                         'Informações do Dispositivo',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       const SizedBox(height: 12),
-                      Text('Nome: ${deviceService.deviceInfo['device_name'] ?? 'N/A'}'),
-                      Text('Modelo: ${deviceService.deviceInfo['device_model'] ?? 'N/A'}'),
-                      Text('ID: ${deviceService.deviceInfo['device_id'] ?? 'N/A'}'),
+                      Text(
+                        'Nome: ${deviceService.deviceInfo['device_name'] ?? 'N/A'}',
+                      ),
+                      Text(
+                        'Modelo: ${deviceService.deviceInfo['device_model'] ?? 'N/A'}',
+                      ),
+                      Text(
+                        'ID: ${deviceService.deviceInfo['device_id'] ?? 'N/A'}',
+                      ),
                       Text('Bateria: $batteryLevel%'),
                       Text('Administrador: ${isAdmin ? 'Ativo' : 'Inativo'}'),
                       Text('Última Sincronização: $lastSyncFormatted'),
@@ -874,7 +1277,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                     children: [
                       const Text(
                         'Configurações Manuais',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
@@ -882,7 +1288,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'IMEI',
                           prefixIcon: const Icon(Icons.perm_device_information),
-                          errorText: imeiController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              imeiController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -891,7 +1300,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Número de Série',
                           prefixIcon: const Icon(Icons.confirmation_number),
-                          errorText: serialController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              serialController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -900,7 +1312,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Setor',
                           prefixIcon: const Icon(Icons.business),
-                          errorText: sectorController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              sectorController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -909,7 +1324,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Andar',
                           prefixIcon: const Icon(Icons.stairs),
-                          errorText: floorController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              floorController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -918,7 +1336,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Host do Servidor',
                           prefixIcon: const Icon(Icons.dns),
-                          errorText: serverHostController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              serverHostController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -927,7 +1348,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Porta do Servidor',
                           prefixIcon: const Icon(Icons.network_check),
-                          errorText: serverPortController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              serverPortController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                         keyboardType: TextInputType.number,
                       ),
@@ -937,7 +1361,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Intervalo de Dados (minutos)',
                           prefixIcon: const Icon(Icons.timer),
-                          errorText: dataIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              dataIntervalController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                         keyboardType: TextInputType.number,
                       ),
@@ -947,7 +1374,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Intervalo de Heartbeat (minutos)',
                           prefixIcon: const Icon(Icons.favorite),
-                          errorText: heartbeatIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              heartbeatIntervalController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                         keyboardType: TextInputType.number,
                       ),
@@ -955,9 +1385,13 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                       TextField(
                         controller: commandCheckIntervalController,
                         decoration: InputDecoration(
-                          labelText: 'Intervalo de Verificação de Comandos (minutos)',
+                          labelText:
+                              'Intervalo de Verificação de Comandos (minutos)',
                           prefixIcon: const Icon(Icons.checklist),
-                          errorText: commandCheckIntervalController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              commandCheckIntervalController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                         keyboardType: TextInputType.number,
                       ),
@@ -967,7 +1401,10 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                         decoration: InputDecoration(
                           labelText: 'Token de Autenticação',
                           prefixIcon: const Icon(Icons.vpn_key),
-                          errorText: tokenController.text.isEmpty ? 'Campo obrigatório' : null,
+                          errorText:
+                              tokenController.text.isEmpty
+                                  ? 'Campo obrigatório'
+                                  : null,
                         ),
                       ),
                     ],
@@ -1006,6 +1443,214 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                   ),
                 ],
               ),
+              const SizedBox(height: 16),
+// Disable Unwanted Apps Section
+Card(
+  child: Padding(
+    padding: const EdgeInsets.all(16.0),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Desabilitar Aplicativos Indesejados',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: appToDisableController,
+          decoration: InputDecoration(
+            labelText: 'Nome do Pacote (ex.: com.android.chrome)',
+            prefixIcon: const Icon(Icons.block),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.block),
+          label: const Text('Adicionar à Lista'),
+          onPressed: () {
+            final packageName = appToDisableController.text.trim();
+            if (packageName.isNotEmpty) {
+              setState(() {
+                unwantedApps.add(packageName);
+                appToDisableController.clear();
+              });
+            }
+          },
+        ),
+        const SizedBox(height: 12),
+        ListView.builder(
+          shrinkWrap: true,
+          itemCount: unwantedApps.length,
+          itemBuilder: (context, index) {
+            return ListTile(
+              title: Text(unwantedApps[index]),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete),
+                onPressed: () {
+                  setState(() {
+                    unwantedApps.removeAt(index);
+                  });
+                },
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.block),
+          label: const Text('Desabilitar Aplicativos'),
+          onPressed: () async {
+            final result = await deviceService.disableUnwantedApps(unwantedApps);
+            setState(() {
+              statusMessage = result;
+            });
+          },
+        ),
+      ],
+    ),
+  ),
+),
+const SizedBox(height: 16),
+// ... resto do código (Action Buttons, etc.) ...
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Instalar Aplicativo via QR Code ou URL',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: apkUrlController,
+                        decoration: InputDecoration(
+                          labelText: 'URL do APK',
+                          prefixIcon: const Icon(Icons.link),
+                          errorText:
+                              apkUrlController.text.isEmpty
+                                  ? 'Campo obrigatório para instalação manual'
+                                  : null,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8.0,
+                              ),
+                              child: ElevatedButton.icon(
+                                icon: const Icon(Icons.qr_code_scanner),
+                                label: const Text('Escanear QR Code'),
+                                onPressed: () async {
+                                  final scannedUrl = await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder:
+                                          (context) =>
+                                              const QRCodeScannerScreen(),
+                                    ),
+                                  );
+                                  if (scannedUrl != null) {
+                                    setState(() {
+                                      apkUrlController.text = scannedUrl;
+                                    });
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8.0,
+                              ),
+                              child: ElevatedButton.icon(
+                                icon: const Icon(Icons.download),
+                                label: const Text('Instalar APK'),
+                                onPressed:
+                                    isInstalling
+                                        ? null
+                                        : () async {
+                                          setState(() {
+                                            isInstalling = true;
+                                            installProgress = 0.0;
+                                          });
+                                          final apkUrl =
+                                              apkUrlController.text.trim();
+                                          if (apkUrl.isEmpty) {
+                                            setState(() {
+                                              statusMessage =
+                                                  'Por favor, insira ou escaneie uma URL válida';
+                                              isInstalling = false;
+                                            });
+                                            return;
+                                          }
+                                          final result = await deviceService
+                                              .installAppFromUrl(
+                                                apkUrl,
+                                                onProgress: (progress) {
+                                                  setState(() {
+                                                    installProgress = progress;
+                                                  });
+                                                },
+                                              );
+                                          setState(() {
+                                            statusMessage = result;
+                                            isInstalling = false;
+                                          });
+                                        },
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (isInstalling)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12.0),
+                          child: LinearProgressIndicator(
+                            value: installProgress / 100,
+                            backgroundColor: Colors.grey[300],
+                            color: Colors.teal,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Center(
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.lock_open),
+                  label: const Text('Desbloquear Configurações'),
+                  onPressed: () async {
+                    await deviceService.unrestrictSettings();
+                    setState(() {
+                      statusMessage = 'Configurações do Android desbloqueadas';
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+              Center(
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.lock),
+                  label: const Text('Bloquear Configurações'),
+                  onPressed: () async {
+                    await deviceService.restrictSettings();
+                    setState(() {
+                      statusMessage = 'Configurações do Android bloqueadas';
+                    });
+                  },
+                ),
+              ),
               const SizedBox(height: 12),
               Center(
                 child: ElevatedButton.icon(
@@ -1022,7 +1667,8 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                       });
                     } else {
                       setState(() {
-                        statusMessage = 'Serviço em segundo plano já está ativo';
+                        statusMessage =
+                            'Serviço em segundo plano já está ativo';
                       });
                     }
                   },
@@ -1034,7 +1680,9 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                 child: Text(
                   'Desenvolvido por: Alexandre Calmon TI-BA\nVersão: 1.0.0\nalexandre.calmon@hapvida.com.br',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
                 ),
               ),
             ],

@@ -4,20 +4,30 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
-import androidx.core.app.NotificationManagerCompat
+import android.util.Log
 
 object NotificationChannel {
+    private val TAG = "NotificationChannel"
+    private const val CHANNEL_ID = "mdm_channel"
+    private const val CHANNEL_NAME = "MDM Notifications"
+    private const val CHANNEL_DESCRIPTION = "Notificações do sistema MDM"
+
     fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channelId = "mdm_client_channel"
-            val channelName = "MDM Client Service"
-            val channelDescription = "Canal para notificações do serviço em segundo plano do MDM Client"
-            val importance = NotificationManager.IMPORTANCE_LOW
-            val channel = NotificationChannel(channelId, channelName, importance).apply {
-                description = channelDescription
+            val importance = NotificationManager.IMPORTANCE_DEFAULT
+            val channel = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, importance).apply {
+                description = CHANNEL_DESCRIPTION
+                enableLights(true)
+                enableVibration(true)
             }
-            val notificationManager = NotificationManagerCompat.from(context)
+            
+            val notificationManager: NotificationManager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
+            
+            Log.d(TAG, "Canal de notificação criado: $CHANNEL_ID")
         }
     }
+
+    fun getChannelId(): String = CHANNEL_ID
 }
