@@ -201,17 +201,14 @@ class DeviceService {
     final serverHost = prefs.getString('server_host') ?? '192.168.0.183';
     final serverPort = prefs.getString('server_port') ?? '3000';
     final lastSync = prefs.getString('last_sync') ?? 'N/A';
-    final authToken = 'hap@2025'; // Forçar token correto
+    authToken = prefs.getString('auth_token') ?? 'seu_token_aqui'; // Usar token correto
+    await prefs.setString('auth_token', authToken);
+    logger.i('authToken configurado: $authToken, serial_number: $serialNumber');
+    final batteryLevel = await battery.batteryLevel; // Forçar token correto
     logger.i('authToken forçado: $authToken');
 
     await prefs.setString('auth_token', authToken);
-    final batteryLevel = await battery.batteryLevel;
-    if (imei.isEmpty || serialNumber.isEmpty || serverHost.isEmpty || serverPort.isEmpty || authToken.isEmpty) {
-      logger.e('Dados essenciais não fornecidos. Verifique as configurações.');
-      throw Exception('Dados essenciais não fornecidos. Verifique as configurações.');
-    }
-
-    this.authToken = authToken;
+    
     serverUrl = 'http://$serverHost:$serverPort';
 
     deviceId = androidInfo.id;
@@ -243,8 +240,9 @@ class DeviceService {
   
 
   Future<bool> validateServerConnection(String host, String port) async {
-  final httpClient = http.Client();
+ final httpClient = http.Client();
   try {
+    logger.i('Validando servidor com authToken: $authToken');
     final response = await httpClient
         .get(
           Uri.parse('http://$host:$port/api/devices'),
@@ -256,11 +254,11 @@ class DeviceService {
         .timeout(const Duration(seconds: 5));
     logger.i('Validação do servidor: ${response.statusCode} ${response.body}');
     if (response.statusCode == 401) {
-      logger.w('Token não fornecido ou ausente');
+      logger.w('Erro 401: Token não fornecido ou ausente');
     } else if (response.statusCode == 403) {
-      logger.w('Token inválido');
+      logger.w('Erro 403: Token inválido');
     }
-    return response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 403;
+    return response.statusCode == 200;
   } catch (e) {
     logger.e('Erro ao validar conexão com o servidor: $e');
     return false;
@@ -270,8 +268,8 @@ class DeviceService {
 }
 
 Future<String> sendDeviceData() async {
-  await initialize(); // Mover para o início
-  logger.i('authToken: $authToken, serial_number: ${deviceInfo['serial_number']}'); // Adicionar log
+  await initialize();
+  logger.i('authToken: $authToken, serial_number: ${deviceInfo['serial_number']}');
 
   if (!await checkConnectivity() || deviceInfo['serial_number'] == null || authToken.isEmpty) {
     final message = 'Sem conexão, serial_number inválido (${deviceInfo['serial_number']}) ou token inválido ($authToken)';
@@ -331,6 +329,9 @@ Future<String> sendDeviceData() async {
   return 'Falha após $maxRetries tentativas';
 }
   Future<String> sendHeartbeat() async {
+    await initialize();
+    logger.i('authToken: $authToken, serial_number: ${deviceInfo['serial_number']}');
+
     if (!await checkConnectivity() || serialnumber == null || authToken.isEmpty) {
       final message = 'Sem conexão ou token inválido';
       logger.e('Erro: $message');
@@ -786,82 +787,95 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     }
   }
 
-  Future<void> _saveManualData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final imei = imeiController.text.trim();
-    final serial = serialController.text.trim();
-    final sector = sectorController.text.trim();
-    final floor = floorController.text.trim();
-    final serverHost = serverHostController.text.trim();
-    final serverPort = serverPortController.text.trim();
-    final dataInterval = int.tryParse(dataIntervalController.text.trim()) ?? 10;
-    final heartbeatInterval = int.tryParse(heartbeatIntervalController.text.trim()) ?? 3;
-    final commandCheckInterval = int.tryParse(commandCheckIntervalController.text.trim()) ?? 1;
-    final token = tokenController.text.trim();
+Future<void> _saveManualData() async {
+  final prefs = await SharedPreferences.getInstance();
+  final imei = imeiController.text.trim();
+  final serial = serialController.text.trim();
+  final sector = sectorController.text.trim();
+  final floor = floorController.text.trim();
+  final serverHost = serverHostController.text.trim();
+  final serverPort = serverPortController.text.trim();
+  final dataInterval = int.tryParse(dataIntervalController.text.trim()) ?? 10;
+  final heartbeatInterval = int.tryParse(heartbeatIntervalController.text.trim()) ?? 3;
+  final commandCheckInterval = int.tryParse(commandCheckIntervalController.text.trim()) ?? 1;
+  final token = tokenController.text.trim();
 
-    if (imei.isEmpty ||
-        serial.isEmpty ||
-        sector.isEmpty ||
-        floor.isEmpty ||
-        serverHost.isEmpty ||
-        serverPort.isEmpty ||
-        token.isEmpty) {
-      setState(() {
-        statusMessage = 'Todos os campos são obrigatórios';
-      });
-      return;
-    }
-    if (!RegExp(r'^\d+$').hasMatch(serverPort)) {
-      setState(() {
-        statusMessage = 'A porta deve ser um número';
-      });
-      return;
-    }
-
-    final isServerReachable = await deviceService.validateServerConnection(serverHost, serverPort);
-    if (!isServerReachable) {
-      setState(() {
-        statusMessage = 'Não foi possível conectar ao servidor em $serverHost:$serverPort. Verifique o endereço e a rede.';
-      });
-      return;
-    }
-
-    await prefs.setString('imei', imei);
-    await prefs.setString('serial_number', serial);
-    await prefs.setString('sector', sector);
-    await prefs.setString('floor', floor);
-    await prefs.setString('server_host', serverHost);
-    await prefs.setString('server_port', serverPort);
-    await prefs.setInt('data_interval', dataInterval);
-    await prefs.setInt('heartbeat_interval', heartbeatInterval);
-    await prefs.setInt('command_check_interval', commandCheckInterval);
-    await prefs.setString('auth_token', token);
-
-    deviceService.deviceInfo['imei'] = imei;
-    deviceService.deviceInfo['serial_number'] = serial;
-    deviceService.deviceInfo['sector'] = sector;
-    deviceService.deviceInfo['floor'] = floor;
-    deviceService.serverUrl = 'http://$serverHost:$serverPort';
-    deviceService.authToken = token;
-
+  if (imei.isEmpty || serial.isEmpty || sector.isEmpty || floor.isEmpty || serverHost.isEmpty || serverPort.isEmpty || token.isEmpty) {
     setState(() {
-      statusMessage = 'Dados salvos com sucesso';
+      statusMessage = 'Todos os campos são obrigatórios';
     });
-
-    final result = await deviceService.sendDeviceData();
-    setState(() {
-      statusMessage = result;
-    });
-
-    final service = FlutterBackgroundService();
-    if (await service.isRunning()) {
-      service.invoke('stopService');
-    }
-    await service.startService();
-    setState(() {
-      isServiceRunning = true;
-    });
+    return;
   }
+  if (!RegExp(r'^\d+$').hasMatch(serverPort)) {
+    setState(() {
+      statusMessage = 'A porta deve ser um número';
+    });
+    return;
+  }
+
+  // Testar token antes de salvar
+  final testClient = http.Client();
+  try {
+    final response = await testClient.get(
+      Uri.parse('http://$serverHost:$serverPort/api/devices'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+    ).timeout(const Duration(seconds: 5));
+    if (response.statusCode != 200) {
+      setState(() {
+        statusMessage = 'Token inválido: Erro ${response.statusCode}';
+      });
+      testClient.close();
+      return;
+    }
+  } catch (e) {
+    setState(() {
+      statusMessage = 'Não foi possível validar o token: $e';
+    });
+    testClient.close();
+    return;
+  } finally {
+    testClient.close();
+  }
+
+  await prefs.setString('imei', imei);
+  await prefs.setString('serial_number', serial);
+  await prefs.setString('sector', sector);
+  await prefs.setString('floor', floor);
+  await prefs.setString('server_host', serverHost);
+  await prefs.setString('server_port', serverPort);
+  await prefs.setInt('data_interval', dataInterval);
+  await prefs.setInt('heartbeat_interval', heartbeatInterval);
+  await prefs.setInt('command_check_interval', commandCheckInterval);
+  await prefs.setString('auth_token', token);
+
+  deviceService.deviceInfo['imei'] = imei;
+  deviceService.deviceInfo['serial_number'] = serial;
+  deviceService.deviceInfo['sector'] = sector;
+  deviceService.deviceInfo['floor'] = floor;
+  deviceService.serverUrl = 'http://$serverHost:$serverPort';
+  deviceService.authToken = token;
+
+  setState(() {
+    statusMessage = 'Dados salvos com sucesso'
+  });
+
+  final result = await deviceService.sendDeviceData();
+  setState(() {
+    statusMessage = result;
+  });
+
+  final service = FlutterBackgroundService();
+  if (await service.isRunning()) {
+    service.invoke('stopService');
+  }
+  await service.startService();
+  setState(() {
+    isServiceRunning = true;
+  });
+}
 
   @override
   Widget build(BuildContext context) {
