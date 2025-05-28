@@ -859,7 +859,7 @@ Future<void> _saveManualData() async {
   deviceService.authToken = token;
 
   setState(() {
-    statusMessage = 'Dados salvos com sucesso'
+    statusMessage = 'Dados salvos com sucesso';
   });
 
   final result = await deviceService.sendDeviceData();
