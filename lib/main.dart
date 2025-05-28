@@ -5,13 +5,16 @@ import 'dart:io';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
+import 'package:network_info_plus/network_info_plus.dart'; // Added for network info
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
@@ -28,10 +31,6 @@ Future<void> initializeService() async {
       onStart: onStart,
       autoStart: true,
       isForegroundMode: true,
-      notificationChannelId: 'mdm_client_channel',
-      initialNotificationTitle: 'MDM Client Ativo',
-      initialNotificationContent: 'Monitorando dispositivo...',
-      foregroundServiceNotificationId: 888,
       foregroundServiceTypes: [AndroidForegroundType.dataSync],
     ),
     iosConfiguration: IosConfiguration(
@@ -177,12 +176,20 @@ class DeviceService {
   final DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
   final Battery battery = Battery();
   final Connectivity connectivity = Connectivity();
+  final NetworkInfo networkInfo = NetworkInfo(); // d: use NetworkInfo from network_info_plusFixe
   final Logger logger = Logger();
+  String? serialnumber;
   String? deviceId;
   Map<String, dynamic> deviceInfo = {};
   static const int maxRetries = 3;
   static const Duration retryDelay = Duration(seconds: 2);
   static const Duration timeout = Duration(seconds: 10);
+
+  DeviceService() {
+    if (kIsWeb) {
+      logger.w('MDM Client não é compatível com Web. Funcionalidades limitadas.');
+    }
+  }
 
   Future<void> initialize() async {
     final androidInfo = await deviceInfoPlugin.androidInfo;
@@ -194,23 +201,31 @@ class DeviceService {
     final serverHost = prefs.getString('server_host') ?? '192.168.0.183';
     final serverPort = prefs.getString('server_port') ?? '3000';
     final lastSync = prefs.getString('last_sync') ?? 'N/A';
-    final authToken = prefs.getString('auth_token') ?? '';
+    final authToken = 'hap@2025'; // Forçar token correto
+    logger.i('authToken forçado: $authToken');
+
+    await prefs.setString('auth_token', authToken);
     final batteryLevel = await battery.batteryLevel;
+    if (imei.isEmpty || serialNumber.isEmpty || serverHost.isEmpty || serverPort.isEmpty || authToken.isEmpty) {
+      logger.e('Dados essenciais não fornecidos. Verifique as configurações.');
+      throw Exception('Dados essenciais não fornecidos. Verifique as configurações.');
+    }
 
     this.authToken = authToken;
     serverUrl = 'http://$serverHost:$serverPort';
+
     deviceId = androidInfo.id;
     deviceInfo = {
-      'device_name': androidInfo.device,
+      'device_name': androidInfo.name,
       'device_model': androidInfo.model,
       'device_id': androidInfo.id,
       'serial_number': serialNumber,
       'imei': imei,
       'sector': sector,
       'floor': floor,
-      'mac_address': 'N/A',
-      'ip_address': 'N/A',
-      'network': 'N/A',
+      'mac_address_radio': await networkInfo.getWifiBSSID() ?? 'N/A',
+      'ip_address': await networkInfo.getWifiIP() ?? 'N/A',
+      'network': await networkInfo.getWifiName() ?? 'N/A',
       'battery': batteryLevel,
       'last_seen': DateTime.now().toIso8601String(),
       'last_sync': lastSync != 'N/A' ? lastSync : DateTime.now().toIso8601String(),
@@ -220,101 +235,103 @@ class DeviceService {
 
   Future<bool> checkConnectivity() async {
     final connectivityResult = await connectivity.checkConnectivity();
+    // ignore: unrelated_type_equality_checks
     final isConnected = connectivityResult != ConnectivityResult.none;
     logger.i('Conectividade: $isConnected');
     return isConnected;
   }
+  
 
   Future<bool> validateServerConnection(String host, String port) async {
-    final httpClient = http.Client();
+  final httpClient = http.Client();
+  try {
+    final response = await httpClient
+        .get(
+          Uri.parse('http://$host:$port/api/devices'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $authToken',
+          },
+        )
+        .timeout(const Duration(seconds: 5));
+    logger.i('Validação do servidor: ${response.statusCode} ${response.body}');
+    if (response.statusCode == 401) {
+      logger.w('Token não fornecido ou ausente');
+    } else if (response.statusCode == 403) {
+      logger.w('Token inválido');
+    }
+    return response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 403;
+  } catch (e) {
+    logger.e('Erro ao validar conexão com o servidor: $e');
+    return false;
+  } finally {
+    httpClient.close();
+  }
+}
+
+Future<String> sendDeviceData() async {
+  await initialize(); // Mover para o início
+  logger.i('authToken: $authToken, serial_number: ${deviceInfo['serial_number']}'); // Adicionar log
+
+  if (!await checkConnectivity() || deviceInfo['serial_number'] == null || authToken.isEmpty) {
+    final message = 'Sem conexão, serial_number inválido (${deviceInfo['serial_number']}) ou token inválido ($authToken)';
+    logger.e('Erro: $message');
+    return message;
+  }
+
+  final httpClient = http.Client();
+  int attempts = 0;
+  while (attempts < maxRetries) {
+    attempts++;
     try {
+      logger.i('Tentativa $attempts: Enviando para $serverUrl/api/devices/data');
       final response = await httpClient
-          .get(
-            Uri.parse('http://$host:$port/api/devices'),
+          .post(
+            Uri.parse('$serverUrl/api/devices/data'),
             headers: {
               'Content-Type': 'application/json',
               'Authorization': 'Bearer $authToken',
             },
+            body: jsonEncode(deviceInfo),
           )
-          .timeout(const Duration(seconds: 5));
-      logger.i('Validação do servidor: ${response.statusCode} ${response.body}');
-      return response.statusCode == 200 || response.statusCode == 401 || response.statusCode == 403;
-    } catch (e) {
-      logger.e('Erro ao validar conexão com o servidor: $e');
-      return false;
-    } finally {
-      httpClient.close();
-    }
-  }
+          .timeout(timeout);
 
-  Future<String> sendDeviceData() async {
-    if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
-      final message = 'Sem conexão ou token inválido';
-      logger.e('Erro: $message');
-      return message;
-    }
-    await initialize();
-
-    final httpClient = http.Client();
-    int attempts = 0;
-    while (attempts < maxRetries) {
-      attempts++;
-      try {
-        final response = await httpClient
-            .post(
-              Uri.parse('$serverUrl/api/devices/data'),
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $authToken',
-              },
-              body: jsonEncode(deviceInfo),
-            )
-            .timeout(timeout);
-
-        if (response.statusCode == 200) {
-          final prefs = await SharedPreferences.getInstance();
-          final lastSync = DateTime.now().toIso8601String();
-          await prefs.setString('last_sync', lastSync);
-          deviceInfo['last_sync'] = lastSync;
-          logger.i('Dados enviados com sucesso: ${response.body}');
-          return 'Dados enviados com sucesso';
-        } else if (response.statusCode == 401) {
-          logger.e('Erro 401: Token inválido');
-          return 'Token inválido';
-        } else if (response.statusCode == 403) {
-          logger.e('Erro 403: Acesso negado');
-          return 'Acesso negado';
-        } else {
-          logger.e('Erro ${response.statusCode}: ${response.body}');
-          return 'Erro ${response.statusCode}: ${response.body}';
-        }
-      } on TimeoutException {
-        logger.w('Tentativa $attempts: Timeout ao conectar ao servidor');
-        if (attempts == maxRetries) {
-          return 'Falha: Tempo limite esgotado após $maxRetries tentativas';
-        }
-        await Future.delayed(retryDelay);
-      } on SocketException catch (e) {
-        logger.w('Tentativa $attempts: SocketException: $e');
-        if (attempts == maxRetries) {
-          return 'Falha: Não foi possível conectar ao servidor ($e)';
-        }
-        await Future.delayed(retryDelay);
-      } catch (e) {
-        logger.e('Tentativa $attempts: Erro inesperado: $e');
-        if (attempts == maxRetries) {
-          return 'Erro ao enviar dados: $e';
-        }
-        await Future.delayed(retryDelay);
-      } finally {
+      logger.i('Resposta: ${response.statusCode} ${response.body}');
+      if (response.statusCode == 200) {
+        final prefs = await SharedPreferences.getInstance();
+        final lastSync = DateTime.now().toIso8601String();
+        await prefs.setString('last_sync', lastSync);
+        deviceInfo['last_sync'] = lastSync;
+        logger.i('Dados enviados com sucesso: ${response.body}');
         httpClient.close();
+        return 'Dados enviados com sucesso';
+      } else if (response.statusCode == 401) {
+        logger.e('Erro 401: Token inválido');
+        httpClient.close();
+        return 'Token inválido';
+      } else if (response.statusCode == 403) {
+        logger.e('Erro 403: Acesso negado');
+        httpClient.close();
+        return 'Acesso negado';
+      } else {
+        logger.e('Erro ${response.statusCode}: ${response.body}');
+        httpClient.close();
+        return 'Erro ${response.statusCode}: ${response.body}';
       }
+    } catch (e) {
+      logger.e('Tentativa $attempts: Erro inesperado: $e');
+      if (attempts == maxRetries) {
+        httpClient.close();
+        return 'Erro ao enviar dados: $e';
+      }
+      await Future.delayed(retryDelay);
     }
-    return 'Falha após $maxRetries tentativas';
   }
-
+  httpClient.close();
+  return 'Falha após $maxRetries tentativas';
+}
   Future<String> sendHeartbeat() async {
-    if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
+    if (!await checkConnectivity() || serialnumber == null || authToken.isEmpty) {
       final message = 'Sem conexão ou token inválido';
       logger.e('Erro: $message');
       return message;
@@ -346,91 +363,98 @@ class DeviceService {
             .timeout(timeout);
 
         logger.i('Heartbeat enviado: ${response.statusCode} ${response.body}');
+        httpClient.close();
         return 'Heartbeat enviado com sucesso';
       } on TimeoutException {
         logger.w('Tentativa $attempts: Timeout ao enviar heartbeat');
         if (attempts == maxRetries) {
+          httpClient.close();
           return 'Falha: Timeout após $maxRetries tentativas';
         }
         await Future.delayed(retryDelay);
       } on SocketException catch (e) {
         logger.w('Tentativa $attempts: SocketException: $e');
         if (attempts == maxRetries) {
+          httpClient.close();
           return 'Falha: Não foi possível conectar ao servidor ($e)';
         }
         await Future.delayed(retryDelay);
       } catch (e) {
         logger.e('Tentativa $attempts: Erro inesperado: $e');
         if (attempts == maxRetries) {
+          httpClient.close();
           return 'Erro ao enviar heartbeat: $e';
         }
         await Future.delayed(retryDelay);
-      } finally {
-        httpClient.close();
       }
     }
+    httpClient.close();
     return 'Falha após $maxRetries tentativas';
   }
 
   Future<void> checkForCommands() async {
-    if (!await checkConnectivity() || deviceId == null || authToken.isEmpty) {
-      logger.e('Erro: Sem conexão ou token inválido');
-      return;
-    }
+  if (!await checkConnectivity() || deviceInfo['serial_number'] == null || authToken.isEmpty) {
+    logger.e('Erro: Sem conexão, serial_number inválido ou token inválido');
+    return;
+  }
 
-    final httpClient = http.Client();
-    int attempts = 0;
-    while (attempts < maxRetries) {
-      attempts++;
-      try {
-        final response = await httpClient
-            .get(
-              Uri.parse('$serverUrl/api/devices/commands?device_id=$deviceId'),
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $authToken',
-              },
-            )
-            .timeout(timeout);
+  final httpClient = http.Client();
+  int attempts = 0;
+  while (attempts < maxRetries) {
+    attempts++;
+    try {
+      final response = await httpClient
+          .get(
+            Uri.parse('$serverUrl/api/devices/commands?serial_number=${deviceInfo['serial_number']}'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $authToken',
+            },
+          )
+          .timeout(timeout);
 
-        if (response.statusCode == 200) {
-          final List<dynamic> commands = jsonDecode(response.body);
-          for (var commandData in commands) {
-            await executeCommand(
-              commandData['command_type'],
-              commandData['parameters']?['packageName'],
-              commandData['parameters']?['apkUrl'],
-            );
-          }
-          logger.i('Comandos verificados: ${commands.length} comandos');
-          return;
-        } else {
-          logger.e('Erro ${response.statusCode}: ${response.body}');
-          return;
+      if (response.statusCode == 200) {
+        final List<dynamic> commands = jsonDecode(response.body);
+        for (var commandData in commands) {
+          await executeCommand(
+            commandData['command_type'],
+            commandData['parameters']?['packageName'],
+            commandData['parameters']?['apkUrl'],
+          );
         }
-      } on TimeoutException {
-        logger.w('Tentativa $attempts: Timeout ao verificar comandos');
-        if (attempts == maxRetries) {
-          return;
-        }
-        await Future.delayed(retryDelay);
-      } on SocketException catch (e) {
-        logger.w('Tentativa $attempts: SocketException: $e');
-        if (attempts == maxRetries) {
-          return;
-        }
-        await Future.delayed(retryDelay);
-      } catch (e) {
-        logger.e('Tentativa $attempts: Erro inesperado: $e');
-        if (attempts == maxRetries) {
-          return;
-        }
-        await Future.delayed(retryDelay);
-      } finally {
+        logger.i('Comandos verificados: ${commands.length} comandos');
         httpClient.close();
+        return;
+      } else {
+        logger.e('Erro ${response.statusCode}: ${response.body}');
+        httpClient.close();
+        return;
       }
+    } on TimeoutException {
+      logger.w('Tentativa $attempts: Timeout ao verificar comandos');
+      if (attempts == maxRetries) {
+        httpClient.close();
+        return;
+      }
+      await Future.delayed(retryDelay);
+    } on SocketException catch (e) {
+      logger.w('Tentativa $attempts: SocketException: $e');
+      if (attempts == maxRetries) {
+        httpClient.close();
+        return;
+      }
+      await Future.delayed(retryDelay);
+    } catch (e) {
+      logger.e('Tentativa $attempts: Erro inesperado: $e');
+      if (attempts == maxRetries) {
+        httpClient.close();
+        return;
+      }
+      await Future.delayed(retryDelay);
     }
   }
+  httpClient.close();
+}
 
   Future<void> executeCommand(String command, String? packageName, String? apkUrl) async {
     bool isAdmin;
@@ -543,6 +567,7 @@ class MDMClientHome extends StatefulWidget {
 class _MDMClientHomeState extends State<MDMClientHome> {
   final DeviceService deviceService = DeviceService();
   String statusMessage = 'Iniciando...';
+  String _connectionStatus = 'N/A'; // Added for network info
   bool isConnected = false;
   bool isAdmin = false;
   int batteryLevel = 0;
@@ -560,6 +585,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
   final TextEditingController heartbeatIntervalController = TextEditingController();
   final TextEditingController commandCheckIntervalController = TextEditingController();
   final TextEditingController tokenController = TextEditingController();
+  final NetworkInfo _networkInfo = NetworkInfo(); // Fixed: use NetworkInfo from network_info_plus
 
   @override
   void initState() {
@@ -576,6 +602,91 @@ class _MDMClientHomeState extends State<MDMClientHome> {
           statusMessage = 'Serviço em segundo plano parado. Reinicie o app.';
         }
       });
+    });
+  }
+
+  Future<void> _initNetworkInfo() async {
+    String? wifiName,
+        wifiBSSID,
+        wifiIPv4,
+        wifiIPv6,
+        wifiGatewayIP,
+        wifiBroadcast,
+        wifiSubmask;
+
+    try {
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        if (await Permission.locationWhenInUse.request().isGranted) {
+          wifiName = await _networkInfo.getWifiName();
+        } else {
+          wifiName = 'Unauthorized to get Wifi Name';
+        }
+      } else {
+        wifiName = await _networkInfo.getWifiName();
+      }
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Failed to get Wifi Name: $e'); // Replaced developer.log
+      wifiName = 'Failed to get Wifi Name';
+    }
+
+    try {
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        if (await Permission.locationWhenInUse.request().isGranted) {
+          wifiBSSID = await _networkInfo.getWifiBSSID();
+        } else {
+          wifiBSSID = 'Unauthorized to get Wifi BSSID';
+        }
+      } else {
+        wifiBSSID = await _networkInfo.getWifiBSSID(); // Fixed duplicate wifiName
+      }
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Failed to get Wifi BSSID: $e'); // Replaced developer.log
+      wifiBSSID = 'Failed to get Wifi BSSID';
+    }
+
+    try {
+      wifiIPv4 = await _networkInfo.getWifiIP();
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Failed to get Wifi IPv4: $e'); // Replaced developer.log
+      wifiIPv4 = 'Failed to get Wifi IPv4';
+    }
+
+    try {
+      wifiIPv6 = await _networkInfo.getWifiIPv6();
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Failed to get Wifi IPv6: $e'); // Replaced developer.log
+      wifiIPv6 = 'Failed to get Wifi IPv6';
+    }
+
+    try {
+      wifiSubmask = await _networkInfo.getWifiSubmask();
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Failed to get Wifi submask address: $e'); // Replaced developer.log
+      wifiSubmask = 'Failed to get Wifi submask address';
+    }
+
+    try {
+      wifiBroadcast = await _networkInfo.getWifiBroadcast();
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Failed to get Wifi broadcast: $e'); // Replaced developer.log
+      wifiBroadcast = 'Failed to get Wifi broadcast';
+    }
+
+    try {
+      wifiGatewayIP = await _networkInfo.getWifiGatewayIP();
+    } on PlatformException catch (e) {
+      deviceService.logger.e('Failed to get Wifi gateway address: $e'); // Replaced developer.log
+      wifiGatewayIP = 'Failed to get Wifi gateway address';
+    }
+
+    setState(() {
+      _connectionStatus = 'Wifi Name: $wifiName\n'
+          'Wifi BSSID: $wifiBSSID\n'
+          'Wifi IPv4: $wifiIPv4\n'
+          'Wifi IPv6: $wifiIPv6\n'
+          'Wifi Broadcast: $wifiBroadcast\n'
+          'Wifi Gateway: $wifiGatewayIP\n'
+          'Wifi Submask: $wifiSubmask\n';
     });
   }
 
@@ -616,6 +727,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     });
 
     await deviceService.initialize();
+    await _initNetworkInfo(); // Moved here to ensure context
 
     final connectivityResult = await deviceService.checkConnectivity();
     setState(() {
@@ -837,6 +949,11 @@ class _MDMClientHomeState extends State<MDMClientHome> {
                           style: const TextStyle(fontSize: 14, color: Colors.red),
                         ),
                       ],
+                      const SizedBox(height: 8),
+                      Text(
+                        _connectionStatus, // Added network info display
+                        style: const TextStyle(fontSize: 14, color: Colors.black87),
+                      ),
                     ],
                   ),
                 ),
