@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -211,6 +212,13 @@ class DeviceService {
     
     serverUrl = 'http://$serverHost:$serverPort';
 
+    final macAddress = await getRealMacAddress();
+
+    String? ipAddress;
+    String? networkName;
+
+
+
     deviceId = androidInfo.id;
     deviceInfo = {
       'device_name': androidInfo.name,
@@ -220,9 +228,9 @@ class DeviceService {
       'imei': imei,
       'sector': sector,
       'floor': floor,
-      'mac_address_radio': await networkInfo.getWifiBSSID() ?? 'N/A',
-      'ip_address': await networkInfo.getWifiIP() ?? 'N/A',
-      'network': await networkInfo.getWifiName() ?? 'N/A',
+      'mac_address_radio': macAddress,
+      'ip_address': ipAddress ?? 'N/A',
+      'network': networkName ?? 'N/A',
       'battery': batteryLevel,
       'last_seen': DateTime.now().toIso8601String(),
       'last_sync': lastSync != 'N/A' ? lastSync : DateTime.now().toIso8601String(),
@@ -266,6 +274,17 @@ class DeviceService {
     httpClient.close();
   }
 }
+
+Future<void> refreshMacAddress() async {
+    try {
+      final newMac = await getRealMacAddress();
+      deviceInfo['mac_address_radio'] = newMac;
+      logger.i('MAC address atualizado: $newMac');
+    } catch (e) {
+      logger.e('Erro ao atualizar MAC address: $e');
+    }
+  }
+
 
 Future<String> sendDeviceData() async {
   await initialize();
@@ -552,6 +571,106 @@ Future<String> sendDeviceData() async {
     }
   }
 
+  Future<String> getRealMacAddress() async {
+    String macAddress = 'N/A';
+    
+    try {
+      // Verificar permissões primeiro
+      if (await Permission.locationWhenInUse.request().isGranted) {
+        
+        // Método 1: Tentar obter via NetworkInfo
+        String? wifiBSSID = await networkInfo.getWifiBSSID();
+        if (wifiBSSID != null && 
+            wifiBSSID != '02:00:00:00:00:00' && 
+            wifiBSSID.isNotEmpty && 
+            wifiBSSID != 'null') {
+          macAddress = wifiBSSID;
+          logger.i('MAC obtido via NetworkInfo: $macAddress');
+          return macAddress;
+        }
+        
+        // Método 2: Tentar via método nativo (Android)
+        try {
+          final result = await platform.invokeMethod('getRealMacAddress');
+          if (result != null && 
+              result != '02:00:00:00:00:00' && 
+              result.toString().isNotEmpty) {
+            macAddress = result.toString();
+            logger.i('MAC obtido via método nativo: $macAddress');
+            return macAddress;
+          }
+        } catch (e) {
+          logger.w('Erro ao obter MAC via método nativo: $e');
+        }
+        
+        // Método 3: Fallback - usar informações do dispositivo
+        final androidInfo = await deviceInfoPlugin.androidInfo;
+        
+        // Criar um identificador único baseado no dispositivo
+        final deviceFingerprint = _generateDeviceFingerprint(androidInfo);
+        macAddress = deviceFingerprint;
+        logger.i('MAC gerado via fingerprint: $macAddress');
+        
+      } else {
+        logger.w('Permissão de localização não concedida');
+        macAddress = 'Permission_Denied';
+      }
+      
+    } catch (e) {
+      logger.e('Erro ao obter MAC address: $e');
+      macAddress = 'Error_$e';
+    }
+    
+    return macAddress;
+  }
+  
+  // Gera um fingerprint único do dispositivo
+  String _generateDeviceFingerprint(AndroidDeviceInfo androidInfo) {
+    final components = [
+      androidInfo.id,
+      androidInfo.serialNumber,
+      androidInfo.board,
+      androidInfo.bootloader,
+      androidInfo.brand,
+      androidInfo.device,
+      androidInfo.fingerprint,
+      androidInfo.hardware,
+      androidInfo.host,
+      androidInfo.model,
+      androidInfo.product,
+    ];
+    
+    final combined = components.where((c) => c.isNotEmpty).join('|');
+    
+    // Criar um hash MD5 do fingerprint
+    final bytes = utf8.encode(combined);
+    final digest = md5.convert(bytes);
+    
+    // Converter para formato MAC (XX:XX:XX:XX:XX:XX)
+    final macParts = <String>[];
+    for (int i = 0; i < 6; i++) {
+      final byte = digest.bytes[i];
+      macParts.add(byte.toRadixString(16).padLeft(2, '0').toUpperCase());
+    }
+    
+    return 'FP:${macParts.join(':')}'; // FP = FingerPrint
+  }
+  
+  // Método para verificar se o MAC é válido
+  bool _isValidMacAddress(String? mac) {
+    if (mac == null || mac.isEmpty || mac == 'null') return false;
+    
+    // MACs fake comuns
+    final fakeMacs = [
+      '02:00:00:00:00:00',
+      '00:00:00:00:00:00',
+      'ff:ff:ff:ff:ff:ff',
+      'FF:FF:FF:FF:FF:FF',
+    ];
+    
+    return !fakeMacs.contains(mac.toLowerCase());
+  }
+
   Future<bool> isServiceRunning() async {
     final service = FlutterBackgroundService();
     return await service.isRunning();
@@ -607,89 +726,136 @@ class _MDMClientHomeState extends State<MDMClientHome> {
   }
 
   Future<void> _initNetworkInfo() async {
-    String? wifiName,
-        wifiBSSID,
-        wifiIPv4,
-        wifiIPv6,
-        wifiGatewayIP,
-        wifiBroadcast,
-        wifiSubmask;
+  String connectionStatus = '';
+  
+  try {
+    // Forçar atualização do MAC address
+    await deviceService.refreshMacAddress();
+    
+    String? wifiName, wifiBSSID, wifiIPv4, wifiIPv6, wifiGatewayIP, wifiBroadcast, wifiSubmask;
 
-    try {
-      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-        if (await Permission.locationWhenInUse.request().isGranted) {
-          wifiName = await _networkInfo.getWifiName();
-        } else {
-          wifiName = 'Unauthorized to get Wifi Name';
-        }
-      } else {
+    // Verificar permissões de localização
+    bool hasLocationPermission = await Permission.locationWhenInUse.request().isGranted;
+    
+    if (hasLocationPermission) {
+      try {
         wifiName = await _networkInfo.getWifiName();
-      }
-    } on PlatformException catch (e) {
-      deviceService.logger.e('Failed to get Wifi Name: $e'); // Replaced developer.log
-      wifiName = 'Failed to get Wifi Name';
-    }
-
-    try {
-      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-        if (await Permission.locationWhenInUse.request().isGranted) {
-          wifiBSSID = await _networkInfo.getWifiBSSID();
+        wifiBSSID = await _networkInfo.getWifiBSSID();
+        
+        // Verificar se o BSSID obtido é válido
+        if (wifiBSSID != null && wifiBSSID != '02:00:00:00:00:00' && wifiBSSID.isNotEmpty) {
+          deviceService.logger.i('BSSID válido obtido: $wifiBSSID');
         } else {
-          wifiBSSID = 'Unauthorized to get Wifi BSSID';
+          deviceService.logger.w('BSSID inválido ou fake obtido: $wifiBSSID');
+          // Tentar obter via método nativo
+          try {
+            final nativeMac = await DeviceService.platform.invokeMethod('getRealMacAddress');
+            if (nativeMac != null && nativeMac != 'UNAVAILABLE') {
+              wifiBSSID = nativeMac;
+              deviceService.logger.i('MAC obtido via método nativo: $wifiBSSID');
+            }
+          } catch (e) {
+            deviceService.logger.e('Erro ao obter MAC via método nativo: $e');
+          }
         }
-      } else {
-        wifiBSSID = await _networkInfo.getWifiBSSID(); // Fixed duplicate wifiName
+      } catch (e) {
+        deviceService.logger.e('Erro ao obter informações WiFi: $e');
+        wifiName = 'Erro ao obter nome WiFi';
+        wifiBSSID = 'Erro ao obter BSSID';
       }
-    } on PlatformException catch (e) {
-      deviceService.logger.e('Failed to get Wifi BSSID: $e'); // Replaced developer.log
-      wifiBSSID = 'Failed to get Wifi BSSID';
+    } else {
+      wifiName = 'Permissão de localização negada';
+      wifiBSSID = 'Permissão de localização negada';
     }
 
+    // Obter outras informações de rede
     try {
       wifiIPv4 = await _networkInfo.getWifiIP();
-    } on PlatformException catch (e) {
-      deviceService.logger.e('Failed to get Wifi IPv4: $e'); // Replaced developer.log
-      wifiIPv4 = 'Failed to get Wifi IPv4';
-    }
-
-    try {
       wifiIPv6 = await _networkInfo.getWifiIPv6();
-    } on PlatformException catch (e) {
-      deviceService.logger.e('Failed to get Wifi IPv6: $e'); // Replaced developer.log
-      wifiIPv6 = 'Failed to get Wifi IPv6';
-    }
-
-    try {
       wifiSubmask = await _networkInfo.getWifiSubmask();
-    } on PlatformException catch (e) {
-      deviceService.logger.e('Failed to get Wifi submask address: $e'); // Replaced developer.log
-      wifiSubmask = 'Failed to get Wifi submask address';
-    }
-
-    try {
       wifiBroadcast = await _networkInfo.getWifiBroadcast();
-    } on PlatformException catch (e) {
-      deviceService.logger.e('Failed to get Wifi broadcast: $e'); // Replaced developer.log
-      wifiBroadcast = 'Failed to get Wifi broadcast';
+      wifiGatewayIP = await _networkInfo.getWifiGatewayIP();
+    } catch (e) {
+      deviceService.logger.e('Erro ao obter informações de rede: $e');
     }
 
-    try {
-      wifiGatewayIP = await _networkInfo.getWifiGatewayIP();
-    } on PlatformException catch (e) {
-      deviceService.logger.e('Failed to get Wifi gateway address: $e'); // Replaced developer.log
-      wifiGatewayIP = 'Failed to get Wifi gateway address';
+    // Atualizar informações no deviceService
+    if (wifiBSSID != null && wifiBSSID != 'Erro ao obter BSSID') {
+      deviceService.deviceInfo['mac_address_radio'] = wifiBSSID;
+    }
+    if (wifiIPv4 != null) {
+      deviceService.deviceInfo['ip_address'] = wifiIPv4;
+    }
+    if (wifiName != null) {
+      deviceService.deviceInfo['network'] = wifiName;
+    }
+
+    // Determinar o status da conexão
+    String macStatus = '';
+    if (wifiBSSID != null) {
+      if (wifiBSSID.startsWith('FP:')) {
+        macStatus = ' (Fingerprint)';
+      } else if (wifiBSSID == '02:00:00:00:00:00') {
+        macStatus = ' (MAC Fake Detectado!)';
+      } else if (wifiBSSID.contains('Erro') || wifiBSSID.contains('Permissão')) {
+        macStatus = ' (Erro/Sem Permissão)';
+      } else {
+        macStatus = ' (MAC Real)';
+      }
     }
 
     setState(() {
-      _connectionStatus = 'Wifi Name: $wifiName\n'
-          'Wifi BSSID: $wifiBSSID\n'
-          'Wifi IPv4: $wifiIPv4\n'
-          'Wifi IPv6: $wifiIPv6\n'
-          'Wifi Broadcast: $wifiBroadcast\n'
-          'Wifi Gateway: $wifiGatewayIP\n'
-          'Wifi Submask: $wifiSubmask\n';
+      _connectionStatus = '''
+🌐 Informações de Rede:
+• Nome WiFi: ${wifiName ?? 'N/A'}
+• MAC/BSSID: ${wifiBSSID ?? 'N/A'}$macStatus
+• IP v4: ${wifiIPv4 ?? 'N/A'}
+• IP v6: ${wifiIPv6 ?? 'N/A'}
+• Gateway: ${wifiGatewayIP ?? 'N/A'}
+• Broadcast: ${wifiBroadcast ?? 'N/A'}
+• Submask: ${wifiSubmask ?? 'N/A'}
+
+📊 Status do MAC:
+${_getMacStatusDescription(wifiBSSID)}
+''';
+    });
+
+  } catch (e) {
+    deviceService.logger.e('Erro geral ao obter informações de rede: $e');
+    setState(() {
+      _connectionStatus = 'Erro ao obter informações de rede: $e';
     });
   }
+}
+
+String _getMacStatusDescription(String? mac) {
+  if (mac == null || mac.isEmpty) {
+    return '❌ MAC não obtido';
+  } else if (mac.startsWith('FP:')) {
+    return '🔍 Using Device Fingerprint (MAC real não disponível)';
+  } else if (mac == '02:00:00:00:00:00') {
+    return '⚠️ MAC Fake detectado - Android está bloqueando acesso ao MAC real';
+  } else if (mac.contains('Erro') || mac.contains('Permissão')) {
+    return '🚫 Erro de permissão ou acesso negado';
+  } else if (RegExp(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$').hasMatch(mac)) {
+    return '✅ MAC Address real obtido com sucesso';
+  } else {
+    return '❓ Status do MAC desconhecido';
+  }
+}
+
+Future<void> _refreshMacAddress() async {
+  setState(() {
+    statusMessage = 'Atualizando MAC address...';
+  });
+  
+  await deviceService.refreshMacAddress();
+  await _initNetworkInfo();
+  
+  setState(() {
+    statusMessage = 'MAC address atualizado';
+  });
+}
 
   Future<void> _initializeClient() async {
     setState(() {
