@@ -278,10 +278,15 @@ Future<String> _getRealMacAddress() async {
 Future<String?> _invokeMethodChannel(String method, [Map<String, dynamic>? arguments]) async {
   const platform = MethodChannel('com.example.mdm_client_base/device_policy');
   try {
+    logger.i('Tentando invocar método $method com argumentos: $arguments');
     final result = await platform.invokeMethod<String>(method, arguments);
+    logger.i('Resultado do método $method: $result');
     return result;
   } on PlatformException catch (e) {
-    logger.e('Erro ao invocar método $method: ${e.message}');
+    logger.e('Erro ao invocar método $method: ${e.message}, código: ${e.code}, detalhes: ${e.details}');
+    rethrow;
+  } catch (e) {
+    logger.e('Erro inesperado ao invocar método $method: $e');
     rethrow;
   }
 }
@@ -327,7 +332,7 @@ bool _isValidMacAddress(String? mac) {
     deviceInfo['imei'] = imei;
     deviceInfo['sector'] = sector;
     deviceInfo['floor'] = floor;
-    deviceInfo['mac_address_radio'] = bssid;
+    deviceInfo['mac_address_radio'] = await networkInfo.getWifiBSSID() ?? 'N/A';
     deviceInfo['ip_address'] = await networkInfo.getWifiIP() ?? 'N/A';
     deviceInfo['network'] = await networkInfo.getWifiName() ?? 'N/A';
     deviceInfo['battery'] = batteryLevel;
@@ -700,7 +705,23 @@ class _MDMClientHomeState extends State<MDMClientHome> {
       });
     });
   }
+  
+  Future<void> _testBSSID() async {
+  try {
+    final bssid = await deviceService.networkInfo.getWifiBSSID();
+    deviceService.logger.i('BSSID direto: $bssid');
+    setState(() {
+      statusMessage = 'BSSID: $bssid';
+    });
+  } catch (e) {
+    deviceService.logger.e('Erro ao obter BSSID: $e');
+    setState(() {
+      statusMessage = 'Erro ao obter BSSID: $e';
+    });
+  }
+}
 
+  @override
   Future<void> _initNetworkInfo() async {
     String? wifiName,
         wifiBSSID,
