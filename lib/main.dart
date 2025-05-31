@@ -17,6 +17,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+
+
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeService();
@@ -51,6 +54,7 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   final logger = Logger();
+  
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) {
       service.setAsForegroundService();
@@ -65,14 +69,18 @@ void onStart(ServiceInstance service) async {
   });
 
   final deviceService = DeviceService();
+  await deviceService.checkConnectivity();
   await deviceService.initialize();
+  await deviceService._refreshMacAddress();
+  await deviceService.updateDeviceInfo();
+  await deviceService.setAuthToken(deviceService.authToken);
   final prefs = await SharedPreferences.getInstance();
   final dataInterval = prefs.getInt('data_interval') ?? 10;
   final heartbeatInterval = prefs.getInt('heartbeat_interval') ?? 3;
   final commandCheckInterval = prefs.getInt('command_check_interval') ?? 1;
 
   logger.i('Serviço em segundo plano iniciado: ${DateTime.now()}');
-
+  logger.i('Intervalos configurados: Data: $dataInterval min, Heartbeat: $heartbeatInterval min, Comandos: $commandCheckInterval min');
   int heartbeatFailureCount = prefs.getInt('heartbeat_failure_count') ?? 0;
   Timer.periodic(const Duration(minutes: 1), (_) async {
     final now = DateTime.now();
@@ -184,12 +192,9 @@ class DeviceService {
   static const int maxRetries = 3;
   static const Duration retryDelay = Duration(seconds: 2);
   static const Duration timeout = Duration(seconds: 10);
-
-  DeviceService() {
-    if (kIsWeb) {
-      logger.w('MDM Client não é compatível com Web. Funcionalidades limitadas.');
-    }
-  }
+  String? bssid;
+  
+  
 
   Future<void> initialize() async {
     final androidInfo = await deviceInfoPlugin.androidInfo;
@@ -230,6 +235,106 @@ class DeviceService {
     logger.i('Inicializado: serverUrl=$serverUrl, deviceId=$deviceId');
   }
 
+Future<void> _refreshMacAddress() async {
+  try {
+    if (await Permission.locationWhenInUse.request().isGranted) {
+      final newMac = await networkInfo.getWifiBSSID() ?? await _getRealMacAddress();
+      if (_isValidMacAddress(newMac)) {
+        deviceInfo['mac_address_radio'] = newMac;
+        logger.i('MAC address atualizado: $newMac');
+      } else {
+        logger.w('MAC address inválido obtido: $newMac');
+        deviceInfo['mac_address_radio'] = 'N/A';
+      }
+    } else {
+      logger.w('Permissão de localização negada');
+      deviceInfo['mac_address_radio'] = 'Permissão negada';
+    }
+  } catch (e) {
+    logger.e('Erro ao atualizar MAC address: $e');
+    deviceInfo['mac_address_radio'] = 'Error';
+  }
+}
+Future<String> _getRealMacAddress() async {
+  if (kIsWeb) {
+    return 'N/A';
+  } else {
+    try {
+      // Verificar permissão ACCESS_WIFI_STATE
+      if (await Permission.location.request().isGranted) {
+        final macAddress = await _invokeMethodChannel('getMacAddress');
+        return macAddress ?? 'N/A';
+      } else {
+        logger.e('Permissão ACCESS_WIFI_STATE negada');
+        return 'Permissão negada';
+      }
+    } catch (e) {
+      logger.e('Erro ao obter MAC address: $e');
+      return 'Error';
+    }
+  }
+}
+
+Future<String?> _invokeMethodChannel(String method, [Map<String, dynamic>? arguments]) async {
+  const platform = MethodChannel('com.example.mdm_client_base/device_policy');
+  try {
+    final result = await platform.invokeMethod<String>(method, arguments);
+    return result;
+  } on PlatformException catch (e) {
+    logger.e('Erro ao invocar método $method: ${e.message}');
+    rethrow;
+  }
+}
+bool _isValidMacAddress(String? mac) {
+  if (mac == null || mac.isEmpty || mac == 'null') return false;
+  
+  // Verificar se o MAC address não é um valor conhecido como "fake"
+  final fakeMacs = [
+    '02:00:00:00:00:00',
+    '00:00:00:00:00:00',
+    'ff:ff:ff:ff:ff:ff',
+    'FF:FF:FF:FF:FF:FF',
+  ];
+  
+  return !fakeMacs.contains(mac.toLowerCase());
+}
+  Future<void> setServerUrl(String host, String port) async {
+    serverUrl = 'http://$host:$port';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('server_host', host);
+    await prefs.setString('server_port', port);
+    logger.i('serverUrl atualizado: $serverUrl');
+  }
+  Future<void> setAuthToken(String token) async {
+    authToken = token;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('auth_token', authToken);
+    logger.i('authToken atualizado: $authToken');
+  }
+  Future<void> updateDeviceInfo() async {
+    final androidInfo = await deviceInfoPlugin.androidInfo;
+    final prefs = await SharedPreferences.getInstance();
+    final imei = prefs.getString('imei') ?? androidInfo.serialNumber ?? 'N/A';
+    final serialNumber = prefs.getString('serial_number') ?? androidInfo.serialNumber ?? 'N/A';
+    final sector = prefs.getString('sector') ?? 'N/A';
+    final floor = prefs.getString('floor') ?? 'N/A';
+    final batteryLevel = await battery.batteryLevel;
+
+    deviceInfo['device_name'] = androidInfo.name;
+    deviceInfo['device_model'] = androidInfo.model;
+    deviceInfo['device_id'] = androidInfo.id;
+    deviceInfo['serial_number'] = serialNumber;
+    deviceInfo['imei'] = imei;
+    deviceInfo['sector'] = sector;
+    deviceInfo['floor'] = floor;
+    deviceInfo['mac_address_radio'] = bssid;
+    deviceInfo['ip_address'] = await networkInfo.getWifiIP() ?? 'N/A';
+    deviceInfo['network'] = await networkInfo.getWifiName() ?? 'N/A';
+    deviceInfo['battery'] = batteryLevel;
+    deviceInfo['last_seen'] = DateTime.now().toIso8601String();
+    
+    logger.i('Device info atualizado: $deviceInfo');
+  }
   Future<bool> checkConnectivity() async {
     final connectivityResult = await connectivity.checkConnectivity();
     // ignore: unrelated_type_equality_checks
@@ -237,8 +342,6 @@ class DeviceService {
     logger.i('Conectividade: $isConnected');
     return isConnected;
   }
-  
-
   Future<bool> validateServerConnection(String host, String port) async {
  final httpClient = http.Client();
   try {
@@ -266,8 +369,7 @@ class DeviceService {
     httpClient.close();
   }
 }
-
-Future<String> sendDeviceData() async {
+  Future<String> sendDeviceData() async {
   await initialize();
   logger.i('authToken: $authToken, serial_number: ${deviceInfo['serial_number']}');
 
@@ -392,7 +494,6 @@ Future<String> sendDeviceData() async {
     httpClient.close();
     return 'Falha após $maxRetries tentativas';
   }
-
   Future<void> checkForCommands() async {
   if (!await checkConnectivity() || deviceInfo['serial_number'] == null || authToken.isEmpty) {
     logger.e('Erro: Sem conexão, serial_number inválido ou token inválido');
@@ -456,7 +557,6 @@ Future<String> sendDeviceData() async {
   }
   httpClient.close();
 }
-
   Future<void> executeCommand(String command, String? packageName, String? apkUrl) async {
     bool isAdmin;
     try {
@@ -506,7 +606,6 @@ Future<String> sendDeviceData() async {
       logger.e('Erro ao executar comando: $e');
     }
   }
-
   Future<void> installApp(String packageName, String apkUrl) async {
     try {
       final directory = await getTemporaryDirectory();
@@ -519,7 +618,6 @@ Future<String> sendDeviceData() async {
       logger.e('Erro ao instalar aplicativo: $e');
     }
   }
-
   Future<void> uninstallApp(String packageName) async {
     try {
       await platform.invokeMethod('uninstallPackage', {'packageName': packageName});
@@ -528,7 +626,6 @@ Future<String> sendDeviceData() async {
       logger.e('Erro ao desinstalar aplicativo: $e');
     }
   }
-
   Future<void> updateApp(String packageName, String apkUrl) async {
     try {
       final directory = await getTemporaryDirectory();
@@ -541,7 +638,6 @@ Future<String> sendDeviceData() async {
       logger.e('Erro ao atualizar aplicativo: $e');
     }
   }
-
   Future<void> requestDeviceAdmin() async {
     try {
       await platform.invokeMethod('requestDeviceAdmin', {
@@ -551,7 +647,6 @@ Future<String> sendDeviceData() async {
       logger.e('Erro ao solicitar permissões de administrador: $e');
     }
   }
-
   Future<bool> isServiceRunning() async {
     final service = FlutterBackgroundService();
     return await service.isRunning();
@@ -787,7 +882,7 @@ class _MDMClientHomeState extends State<MDMClientHome> {
     }
   }
 
-Future<void> _saveManualData() async {
+  Future<void> _saveManualData() async {
   final prefs = await SharedPreferences.getInstance();
   final imei = imeiController.text.trim();
   final serial = serialController.text.trim();
