@@ -199,13 +199,27 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-            // Criar PendingIntent mutável
-            val intent = Intent("com.example.mdm_client_base.INSTALL_RESULT")
+            // CORREÇÃO: Intent explícito e PendingIntent com flags corretas para Android 14+
+            val intent = Intent(this, InstallResultReceiver::class.java).apply {
+                action = "com.example.mdm_client_base.INSTALL_RESULT"
+                putExtra("sessionId", sessionId)
+            }
+            
+            // Flags corretas baseadas na versão do Android
+            val flags = when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> // Android 14+ (API 34+)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> // Android 12+ (API 31+)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                else -> // Android 11 e anteriores
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            
             val pendingIntent = PendingIntent.getBroadcast(
                 this,
                 sessionId,
                 intent,
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                flags
             )
 
             // Registrar receiver para capturar o resultado
@@ -214,17 +228,48 @@ class MainActivity : FlutterActivity() {
                     try {
                         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
                         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                        Log.d(TAG, "Resultado da instalação - Status: $status, Message: $message")
+                        
                         when (status) {
                             PackageInstaller.STATUS_SUCCESS -> {
                                 Log.d(TAG, "Instalação bem-sucedida: $apkPath")
                                 result.success("APK instalado com sucesso")
+                            }
+                            PackageInstaller.STATUS_FAILURE_ABORTED -> {
+                                Log.e(TAG, "Instalação abortada pelo usuário")
+                                result.error("INSTALL_ABORTED", "Instalação cancelada pelo usuário", null)
+                            }
+                            PackageInstaller.STATUS_FAILURE_BLOCKED -> {
+                                Log.e(TAG, "Instalação bloqueada")
+                                result.error("INSTALL_BLOCKED", "Instalação bloqueada pelo sistema", null)
+                            }
+                            PackageInstaller.STATUS_FAILURE_CONFLICT -> {
+                                Log.e(TAG, "Conflito na instalação")
+                                result.error("INSTALL_CONFLICT", "Conflito com versão existente", null)
+                            }
+                            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> {
+                                Log.e(TAG, "APK incompatível")
+                                result.error("INSTALL_INCOMPATIBLE", "APK incompatível com o dispositivo", null)
+                            }
+                            PackageInstaller.STATUS_FAILURE_INVALID -> {
+                                Log.e(TAG, "APK inválido")
+                                result.error("INSTALL_INVALID", "APK inválido ou corrompido", null)
+                            }
+                            PackageInstaller.STATUS_FAILURE_STORAGE -> {
+                                Log.e(TAG, "Espaço insuficiente")
+                                result.error("INSTALL_STORAGE", "Espaço de armazenamento insuficiente", null)
                             }
                             else -> {
                                 Log.e(TAG, "Falha na instalação: Status=$status, Message=$message")
                                 result.error("INSTALL_FAILED", "Falha na instalação - Status: $status, Mensagem: $message", null)
                             }
                         }
-                        context.unregisterReceiver(this)
+                        
+                        try {
+                            context.unregisterReceiver(this)
+                        } catch (ignored: Exception) {
+                            Log.w(TAG, "Receiver já foi desregistrado")
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Erro ao processar resultado: ${e.message}")
                         result.error("INSTALL_ERROR", "Erro ao processar resultado: ${e.message}", null)
@@ -235,13 +280,21 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-            registerReceiver(receiver, IntentFilter("com.example.mdm_client_base.INSTALL_RESULT"))
+            val filter = IntentFilter("com.example.mdm_client_base.INSTALL_RESULT")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(receiver, filter)
+            }
+            
             session.commit(pendingIntent.intentSender)
             session.close()
+            Log.d(TAG, "Sessão de instalação enviada com ID: $sessionId")
+            
         } else {
             Log.d(TAG, "Não é Device Owner, usando instalador padrão")
             
-            // SOLUÇÃO 1: Tentar copiar o arquivo para o diretório interno da aplicação primeiro
+            // Tentar copiar o arquivo para o diretório interno da aplicação primeiro
             try {
                 val internalDir = File(filesDir, "apks")
                 if (!internalDir.exists()) {
@@ -270,7 +323,7 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "Erro ao usar FileProvider: ${e.message}")
                 
-                // SOLUÇÃO 2: Fallback para instalação direta (Android < 7.0)
+                // Fallback para instalação direta (Android < 7.0)
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
                     Log.d(TAG, "Usando instalação direta para versões antigas do Android")
                     val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -280,27 +333,12 @@ class MainActivity : FlutterActivity() {
                     startActivity(intent)
                     result.success("Instalador direto aberto")
                 } else {
-                    // SOLUÇÃO 3: Tentar usar um método alternativo para Android 7.0+
-                    try {
-                        Log.d(TAG, "Tentando método alternativo de instalação")
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(
-                                Uri.parse("file://$apkPath"),
-                                "application/vnd.android.package-archive"
-                            )
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        startActivity(intent)
-                        result.success("Método alternativo de instalação iniciado")
-                    } catch (alternativeException: Exception) {
-                        Log.e(TAG, "Todos os métodos de instalação falharam")
-                        result.error(
-                            "INSTALL_ERROR", 
-                            "Falha em todos os métodos de instalação. FileProvider: ${e.message}, Alternativo: ${alternativeException.message}", 
-                            null
-                        )
-                    }
+                    Log.e(TAG, "Falha em todos os métodos de instalação")
+                    result.error(
+                        "INSTALL_ERROR", 
+                        "Falha ao instalar: ${e.message}", 
+                        null
+                    )
                 }
             }
         }
