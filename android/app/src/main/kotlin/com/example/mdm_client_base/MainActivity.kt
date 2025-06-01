@@ -13,6 +13,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.UserManager
+import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -95,12 +96,22 @@ class MainActivity : FlutterActivity() {
             if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
                 Log.d(TAG, "Applying initial policies as Device Owner")
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_UNINSTALL_APPS)
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_FACTORY_RESET)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_LOCATION)
+                // Forçar localização ativada
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    devicePolicyManager.setLocationEnabled(adminComponent, true)
+                    Log.d(TAG, "Localização forçada a permanecer ativada")
+                }
+                // Desativar Quick Settings
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    devicePolicyManager.setStatusBarDisabled(adminComponent, true)
+                    Log.d(TAG, "Painel de configurações rápidas desativado")
+                }
                 devicePolicyManager.setPasswordQuality(adminComponent, DevicePolicyManager.PASSWORD_QUALITY_ALPHANUMERIC)
                 devicePolicyManager.setPasswordMinimumLength(adminComponent, 8)
                 devicePolicyManager.setLockTaskPackages(adminComponent, arrayOf(packageName))
@@ -204,35 +215,118 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "restrictSettings" -> {
-                    val restrict = call.argument<Boolean>("restrict") ?: false
                     try {
-                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
-                            if (restrict) {
-                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
-                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
-                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
-                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_UNINSTALL_APPS)
-                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
-                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
-                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
-                                Log.d(TAG, "Settings restricted")
-                            } else {
-                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
-                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
-                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
-                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_UNINSTALL_APPS)
-                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
-                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
-                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
-                                Log.d(TAG, "Settings unrestricted")
+                        if (!devicePolicyManager.isDeviceOwnerApp(packageName)) {
+                            Log.w(TAG, "Não é Device Owner")
+                            result.error("ADMIN_ERROR", "Aplicativo não é Device Owner", null)
+                            return@setMethodCallHandler
+                        }
+
+                        // Expect a map of restrictions with boolean values
+                        val restrictions = call.argument<Map<String, Boolean>>("restrictions")
+                        if (restrictions == null) {
+                            Log.w(TAG, "Mapa de restrições é nulo")
+                            result.error("INVALID_INPUT", "Mapa de restrições é nulo", null)
+                            return@setMethodCallHandler
+                        }
+
+                        val appliedRestrictions = mutableListOf<String>()
+                        val clearedRestrictions = mutableListOf<String>()
+                        val errors = mutableListOf<String>()
+                        val currentStatus = mutableMapOf<String, Boolean>()
+
+                        // Define supported restrictions
+                        val restrictionMap = mapOf(
+                            "DISALLOW_CONFIG_WIFI" to UserManager.DISALLOW_CONFIG_WIFI,
+                            "DISALLOW_INSTALL_APPS" to UserManager.DISALLOW_INSTALL_APPS,
+                            "DISALLOW_UNINSTALL_APPS" to UserManager.DISALLOW_UNINSTALL_APPS,
+                            "DISALLOW_MODIFY_ACCOUNTS" to UserManager.DISALLOW_MODIFY_ACCOUNTS,
+                            "DISALLOW_CONFIG_MOBILE_NETWORKS" to UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS,
+                            "DISALLOW_FACTORY_RESET" to UserManager.DISALLOW_FACTORY_RESET,
+                            "DISALLOW_CONFIG_LOCATION" to UserManager.DISALLOW_CONFIG_LOCATION
+                        )
+
+                        // Verificar status atual das restrições
+                        restrictionMap.forEach { (key, restriction) ->
+                            val isRestricted = devicePolicyManager.getUserRestrictions(adminComponent).contains(restriction)
+                            currentStatus[key] = isRestricted
+                            Log.d(TAG, "Restrição $key: atualmente ${if (isRestricted) "ativa" else "inativa"}")
+                        }
+
+                        // Processar cada restrição solicitada
+                        restrictions.forEach { (key, enable) ->
+                            val restriction = restrictionMap[key]
+                            if (restriction == null) {
+                                Log.w(TAG, "Restrição não suportada: $key")
+                                errors.add("Restrição não suportada: $key")
+                                return@forEach
                             }
-                            result.success("Settings updated successfully")
+                            try {
+                                if (enable) {
+                                    devicePolicyManager.addUserRestriction(adminComponent, restriction)
+                                    appliedRestrictions.add(key)
+                                    Log.d(TAG, "Restrição aplicada: $key")
+                                    // Forçar localização ativada para DISALLOW_CONFIG_LOCATION
+                                    if (key == "DISALLOW_CONFIG_LOCATION" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                        devicePolicyManager.setLocationEnabled(adminComponent, true)
+                                        Log.d(TAG, "Localização forçada a permanecer ativada")
+                                    }
+                                } else {
+                                    devicePolicyManager.clearUserRestriction(adminComponent, restriction)
+                                    clearedRestrictions.add(key)
+                                    Log.d(TAG, "Restrição removida: $key")
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Erro ao processar restrição $key: ${e.message}")
+                                errors.add("Falha ao processar $key: ${e.message}")
+                            }
+                        }
+
+                        // Tentar bloquear o aplicativo de configurações do sistema
+                        try {
+                            if (restrictions.values.any { it }) { // Se alguma restrição está ativa
+                                devicePolicyManager.setApplicationHidden(adminComponent, "com.android.settings", true)
+                                Log.d(TAG, "Aplicativo de configurações do sistema (com.android.settings) ocultado")
+                                // Fallback: suspender o pacote de configurações
+                                devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf("com.android.settings"), true)
+                                Log.d(TAG, "Aplicativo de configurações do sistema (com.android.settings) suspenso")
+                                // Desativar Quick Settings
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                    devicePolicyManager.setStatusBarDisabled(adminComponent, true)
+                                    Log.d(TAG, "Painel de configurações rápidas desativado")
+                                }
+                            } else {
+                                devicePolicyManager.setApplicationHidden(adminComponent, "com.android.settings", false)
+                                devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf("com.android.settings"), false)
+                                Log.d(TAG, "Aplicativo de configurações do sistema (com.android.settings) restaurado")
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                    devicePolicyManager.setStatusBarDisabled(adminComponent, false)
+                                    Log.d(TAG, "Painel de configurações rápidas restaurado")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Erro ao bloquear configurações: ${e.message}")
+                            errors.add("Erro ao bloquear configurações: ${e.message}")
+                        }
+
+                        // Preparar resultado
+                        val resultMap = mapOf(
+                            "applied" to appliedRestrictions,
+                            "cleared" to clearedRestrictions,
+                            "errors" to errors,
+                            "currentStatus" to currentStatus
+                        )
+
+                        if (errors.isEmpty()) {
+                            Log.d(TAG, "Restrições atualizadas com sucesso: $resultMap")
+                            result.success(resultMap)
                         } else {
-                            result.error("ADMIN_ERROR", "Application is not Device Owner", null)
+                            Log.e(TAG, "Algumas restrições falharam: $errors")
+                            result.error("RESTRICT_SETTINGS_PARTIAL_ERROR", "Algumas restrições falharam: $errors", resultMap)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error restricting settings: ${e.message}")
-                        result.error("RESTRICT_SETTINGS_ERROR", "Error restricting settings: ${e.message}", null)
+                        Log.e(TAG, "Erro ao restringir configurações: ${e.message}")
+                        result.error("RESTRICT_SETTINGS_ERROR", "Erro ao restringir configurações: ${e.message}", null)
                     }
                 }
                 "getWifiInfo" -> {
