@@ -6,12 +6,12 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.os.UserManager
 import android.util.Log
+import androidx.core.content.FileProvider // Importação movida para o topo
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -28,13 +28,104 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         NotificationChannel.createNotificationChannel(this)
         Log.d(TAG, "MainActivity onCreate")
+
+        devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
+
+        // Lidar com provisionamento
+        handleProvisioningIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleProvisioningIntent(intent)
+    }
+
+    private fun handleProvisioningIntent(intent: Intent?) {
+        val action = intent?.action
+        if (action == DevicePolicyManager.ACTION_PROVISION_MANAGED_DEVICE ||
+            action == "com.samsung.android.knox.intent.action.PROVISION_MANAGED_DEVICE") {
+            Log.d(TAG, "Provisionamento detectado: $action")
+            try {
+                val provisioningIntent = Intent(DevicePolicyManager.ACTION_PROVISION_MANAGED_DEVICE).apply {
+                    putExtra(DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME, adminComponent)
+                    putExtra(DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_PACKAGE_NAME, packageName)
+                    putExtra(DevicePolicyManager.EXTRA_PROVISIONING_WIFI_SSID, "MDM_Network")
+                    putExtra(DevicePolicyManager.EXTRA_PROVISIONING_WIFI_PASSWORD, "your_wifi_password")
+                    putExtra(DevicePolicyManager.EXTRA_PROVISIONING_SKIP_ENCRYPTION, true)
+                    if (action == "com.samsung.android.knox.intent.action.PROVISION_MANAGED_DEVICE") {
+                        putExtra("com.samsung.android.knox.intent.extra.KNOX_ENROLLMENT_PROFILE", true)
+                    }
+                }
+                startActivityForResult(provisioningIntent, 1001)
+                Log.d(TAG, "Iniciando provisionamento como Device Owner")
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro ao iniciar provisionamento: ${e.message}", e)
+                notifyProvisioningFailure("Erro ao iniciar provisionamento: ${e.message}")
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 1001) {
+            if (resultCode == RESULT_OK) {
+                Log.d(TAG, "Provisionamento concluído com sucesso")
+                applyInitialPolicies()
+                flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+                    MethodChannel(messenger, CHANNEL).invokeMethod("provisioningComplete", mapOf("status" to "success"))
+                }
+            } else {
+                Log.e(TAG, "Provisionamento falhou, resultCode: $resultCode")
+                notifyProvisioningFailure("Provisionamento falhou, código: $resultCode")
+                flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+                    MethodChannel(messenger, CHANNEL).invokeMethod("provisioningComplete", mapOf("status" to "failed", "error" to "Código: $resultCode"))
+                }
+            }
+        }
+    }
+
+    private fun applyInitialPolicies() {
+        try {
+            if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
+                Log.d(TAG, "Aplicando políticas iniciais como Device Owner")
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_UNINSTALL_APPS)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
+                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
+                devicePolicyManager.setPasswordQuality(adminComponent, DevicePolicyManager.PASSWORD_QUALITY_ALPHANUMERIC)
+                devicePolicyManager.setPasswordMinimumLength(adminComponent, 8)
+                devicePolicyManager.setLockTaskPackages(adminComponent, arrayOf(packageName))
+                Log.d(TAG, "Políticas iniciais aplicadas com sucesso")
+            } else {
+                Log.w(TAG, "Não é Device Owner, políticas não aplicadas")
+                notifyPolicyFailure("Aplicativo não é Device Owner")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao aplicar políticas iniciais: ${e.message}", e)
+            notifyPolicyFailure("Erro ao aplicar políticas: ${e.message}")
+        }
+    }
+
+    private fun notifyProvisioningFailure(message: String) {
+        flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+            MethodChannel(messenger, CHANNEL).invokeMethod("provisioningFailure", mapOf("error" to message))
+        }
+    }
+
+    private fun notifyPolicyFailure(message: String) {
+        flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+            MethodChannel(messenger, CHANNEL).invokeMethod("policyFailure", mapOf("error" to message))
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         Log.d(TAG, "Configurando MethodChannel: $CHANNEL")
-        devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             Log.d(TAG, "Método chamado: ${call.method}")
@@ -46,111 +137,107 @@ class MainActivity : FlutterActivity() {
                             result.error("INVALID_PACKAGE", "Nome do pacote é nulo", null)
                             return@setMethodCallHandler
                         }
-                        
-                        if (devicePolicyManager.isDeviceOwnerApp(this.packageName) || 
-                            devicePolicyManager.isProfileOwnerApp(this.packageName)) {
-                            
-                            // Desabilita o aplicativo
+                        if (devicePolicyManager.isDeviceOwnerApp(this.packageName)) {
                             devicePolicyManager.setApplicationHidden(adminComponent, packageName, true)
                             Log.d(TAG, "Aplicativo $packageName desabilitado")
                             result.success("Aplicativo desabilitado com sucesso")
                         } else {
-                            Log.w(TAG, "Não é device owner ou profile owner")
-                            result.error("NOT_ADMIN", "Permissões de administrador necessárias", null)
+                            Log.w(TAG, "Não é Device Owner")
+                            result.error("NOT_ADMIN", "Permissões de Device Owner necessárias", null)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Erro ao desabilitar aplicativo: ${e.message}")
                         result.error("DISABLE_ERROR", "Erro ao desabilitar aplicativo: ${e.message}", null)
                     }
                 }
-                
                 "installSystemApp" -> {
                     val apkPath = call.argument<String>("apkPath")
+                    Log.d(TAG, "Tentando instalar APK: $apkPath")
                     try {
                         if (apkPath == null) {
                             Log.w(TAG, "Caminho do APK nulo")
                             result.error("INVALID_PATH", "Caminho do APK é nulo", null)
                             return@setMethodCallHandler
                         }
-                        
-                        if (devicePolicyManager.isDeviceOwnerApp(packageName) || 
-                            devicePolicyManager.isProfileOwnerApp(packageName)) {
-                            
-                            val apkFile = File(apkPath)
-                            if (!apkFile.exists()) {
-                                Log.w(TAG, "Arquivo APK não encontrado: $apkPath")
-                                result.error("FILE_NOT_FOUND", "Arquivo APK não encontrado", null)
-                                return@setMethodCallHandler
-                            }
-
-                            // Usar PackageInstaller para instalação silenciosa
+                        val apkFile = File(apkPath)
+                        if (!apkFile.exists()) {
+                            Log.w(TAG, "Arquivo APK não encontrado: $apkPath")
+                            result.error("FILE_NOT_FOUND", "Arquivo APK não encontrado", null)
+                            return@setMethodCallHandler
+                        }
+                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
+                            Log.d(TAG, "Instalação silenciosa como Device Owner")
                             val packageInstaller = packageManager.packageInstaller
                             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
                             val sessionId = packageInstaller.createSession(params)
                             val session = packageInstaller.openSession(sessionId)
-
-                            // Copiar o APK para a sessão
                             val inputStream = FileInputStream(apkFile)
                             val outputStream = session.openWrite("package", 0, apkFile.length())
                             inputStream.copyTo(outputStream)
                             session.fsync(outputStream)
                             inputStream.close()
                             outputStream.close()
-
-                            // Confirmar a instalação usando IntentSenderReceiver
                             session.commit(IntentSenderReceiver.createIntentSender(this, sessionId))
                             session.close()
-
-                            Log.d(TAG, "Instalação iniciada: $apkPath")
-                            result.success("Instalação iniciada com sucesso")
+                            result.success("Instalação silenciosa iniciada")
                         } else {
-                            result.error("ADMIN_ERROR", "Aplicativo não é administrador de dispositivo", null)
+                            Log.d(TAG, "Não é Device Owner, usando instalador padrão")
+                            val uri = FileProvider.getUriForFile(
+                                this,
+                                "com.example.mdm_client_base.fileprovider",
+                                apkFile
+                            )
+                            val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                                setDataAndType(uri, "application/vnd.android.package-archive")
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(intent)
+                            result.success("Instalador padrão aberto")
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao instalar APK: ${e.message}")
+                        Log.e(TAG, "Erro ao instalar APK: ${e.message}", e)
                         result.error("INSTALL_ERROR", "Erro ao instalar APK: ${e.message}", null)
                     }
                 }
-                
                 "restrictSettings" -> {
                     val restrict = call.argument<Boolean>("restrict") ?: false
                     try {
-                        if (devicePolicyManager.isDeviceOwnerApp(packageName) || 
-                            devicePolicyManager.isProfileOwnerApp(packageName)) {
-                            
+                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
                             if (restrict) {
-                                // Bloquear configurações
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_UNINSTALL_APPS)
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
+                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
+                                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
                                 Log.d(TAG, "Configurações restritas")
                             } else {
-                                // Desbloquear configurações
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_UNINSTALL_APPS)
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
+                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
+                                devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
                                 Log.d(TAG, "Configurações liberadas")
                             }
                             result.success("Configurações atualizadas com sucesso")
                         } else {
-                            result.error("ADMIN_ERROR", "Aplicativo não é administrador de dispositivo", null)
+                            result.error("ADMIN_ERROR", "Aplicativo não é Device Owner", null)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Erro ao restringir configurações: ${e.message}")
                         result.error("RESTRICT_SETTINGS_ERROR", "Erro ao restringir configurações: ${e.message}", null)
                     }
                 }
-                
                 "getWifiInfo" -> {
                     try {
                         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                         val wifiInfo = wifiManager.connectionInfo
                         val ssid = wifiInfo.ssid?.replace("\"", "") ?: "N/A"
-                        val bssid = wifiInfo.bssid ?: "N/A"
+                        val bssid = wifiInfo.bssid?.takeIf { it != "02:00:00:00:00:00" } ?: "N/A"
                         val result_map = mapOf(
                             "ssid" to ssid,
                             "bssid" to bssid,
@@ -160,24 +247,22 @@ class MainActivity : FlutterActivity() {
                         Log.d(TAG, "Informações Wi-Fi obtidas: $result_map")
                         result.success(result_map)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao obter informações de Wi-Fi: ${e.message}")
-                        result.error("WIFI_INFO_ERROR", "Erro ao obter informações de Wi-Fi: ${e.message}", null)
+                        Log.e(TAG, "Erro ao obter informação de Wi-Fi: ${e.message}")
+                        result.error("WIFI_INFO_ERROR", "Erro ao obter informação de Wi-Fi: ${e.message}", null)
                     }
                 }
-                
                 "getMacAddress" -> {
                     try {
                         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                         val wifiInfo = wifiManager.connectionInfo
-                        val macAddress = wifiInfo.macAddress ?: "02:00:00:00:00:00"
-                        Log.d(TAG, "MAC Address obtido: $macAddress")
+                        val macAddress = wifiInfo.bssid?.takeIf { it != "02:00:00:00:00:00" } ?: "N/A"
+                        Log.d(TAG, "BSSID obtido: $macAddress")
                         result.success(macAddress)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao obter MAC Address: ${e.message}")
-                        result.error("MAC_ADDRESS_ERROR", "Erro ao obter MAC Address: ${e.message}", null)
+                        Log.e(TAG, "Erro ao obter BSSID: ${e.message}")
+                        result.error("MAC_ADDRESS_ERROR", "Erro ao obter BSSID: ${e.message}", null)
                     }
                 }
-                
                 "isDeviceOwnerOrProfileOwner" -> {
                     try {
                         val isAdmin = devicePolicyManager.isDeviceOwnerApp(packageName) ||
@@ -189,24 +274,21 @@ class MainActivity : FlutterActivity() {
                         result.error("ADMIN_CHECK_ERROR", e.message, null)
                     }
                 }
-                
                 "lockDevice" -> {
                     try {
-                        if (devicePolicyManager.isDeviceOwnerApp(packageName) ||
-                            devicePolicyManager.isProfileOwnerApp(packageName)) {
+                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
                             devicePolicyManager.lockNow()
                             Log.d(TAG, "Dispositivo bloqueado")
                             result.success(true)
                         } else {
-                            Log.w(TAG, "Não é device owner ou profile owner")
-                            result.error("NOT_ADMIN", "App não é administrador do dispositivo", null)
+                            Log.w(TAG, "Não é Device Owner")
+                            result.error("NOT_ADMIN", "App não é Device Owner", null)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Erro ao bloquear: ${e.message}")
                         result.error("LOCK_ERROR", e.message, null)
                     }
                 }
-                
                 "wipeData" -> {
                     try {
                         if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
@@ -214,15 +296,14 @@ class MainActivity : FlutterActivity() {
                             Log.d(TAG, "Dados apagados")
                             result.success(true)
                         } else {
-                            Log.w(TAG, "Não é device owner")
-                            result.error("NOT_ADMIN", "App não é device owner", null)
+                            Log.w(TAG, "Não é Device Owner")
+                            result.error("NOT_ADMIN", "App não é Device Owner", null)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Erro ao apagar dados: ${e.message}")
                         result.error("WIPE_ERROR", e.message, null)
                     }
                 }
-                
                 "uninstallPackage" -> {
                     try {
                         val packageNameArg = call.argument<String>("packageName")
@@ -231,10 +312,7 @@ class MainActivity : FlutterActivity() {
                             result.error("INVALID_PACKAGE", "Nome do pacote é nulo", null)
                             return@setMethodCallHandler
                         }
-                        
-                        if (devicePolicyManager.isDeviceOwnerApp(this.packageName) ||
-                            devicePolicyManager.isProfileOwnerApp(this.packageName)) {
-                            
+                        if (devicePolicyManager.isDeviceOwnerApp(this.packageName)) {
                             val packageInstaller = packageManager.packageInstaller
                             val intent = Intent(this, UninstallResultReceiver::class.java).apply {
                                 action = "com.example.mdm_client_base.UNINSTALL_RESULT"
@@ -255,15 +333,14 @@ class MainActivity : FlutterActivity() {
                             Log.d(TAG, "Desinstalação iniciada: $packageNameArg")
                             result.success(true)
                         } else {
-                            Log.w(TAG, "Não é device owner ou profile owner")
-                            result.error("NOT_ADMIN", "App não é administrador do dispositivo", null)
+                            Log.w(TAG, "Não é Device Owner")
+                            result.error("NOT_ADMIN", "App não é Device Owner", null)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Erro ao desinstalar: ${e.message}")
                         result.error("UNINSTALL_ERROR", e.message, null)
                     }
                 }
-                
                 "requestDeviceAdmin" -> {
                     try {
                         val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
@@ -279,7 +356,6 @@ class MainActivity : FlutterActivity() {
                         result.error("REQUEST_ADMIN_ERROR", e.message, null)
                     }
                 }
-                
                 else -> {
                     Log.w(TAG, "Método não implementado: ${call.method}")
                     result.notImplemented()

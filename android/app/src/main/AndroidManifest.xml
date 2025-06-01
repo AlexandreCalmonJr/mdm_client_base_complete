@@ -1,52 +1,43 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-    
-    <!-- Camera permission -->
+
+    <!-- Permissões existentes do seu projeto -->
     <uses-permission android:name="android.permission.CAMERA" />
-    
-    <!-- Location permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
-    <!-- Network permissions -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    
-    <!-- System permissions -->
     <uses-permission android:name="android.permission.BATTERY_STATS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Foreground service permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    
-    <!-- Package management permissions (requires system app or special privileges) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
-    
-    <!-- Storage permissions for Android < 13 -->
-    <uses-permission 
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE" 
-        android:maxSdkVersion="32" />
-    <uses-permission 
-        android:name="android.permission.READ_EXTERNAL_STORAGE" 
-        android:maxSdkVersion="32" />
-    
-    <!-- Media permissions for Android 13+ -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
-    <application
+    <!-- Permissões adicionais para notificações -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!-- Permissão adicional para provisionamento -->
+    <uses-permission android:name="android.permission.MANAGE_DEVICE_ADMINS" />
+
+        <application
         android:label="MDM Client Base"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:supportsRtl="true">
-        
+
         <!-- Main Activity -->
         <activity
             android:name=".MainActivity"
@@ -56,14 +47,20 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            
+
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme" />
-                
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Intent-filter para provisionamento via QR Code/NFC -->
+            <intent-filter>
+                <action android:name="android.intent.action.PROVISION_MANAGED_DEVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
@@ -79,10 +76,24 @@
                 
             <intent-filter>
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.action.PROFILE_PROVISIONING_COMPLETE" />
             </intent-filter>
         </receiver>
 
-        <!-- Package Installation Receivers -->
+        <!-- Receivers para flutter_local_notifications -->
+        <receiver android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" 
+            android:exported="false" />
+        <receiver android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.PACKAGE_REPLACED"/>
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Receivers existentes do seu projeto -->
         <receiver 
             android:name=".InstallResultReceiver"
             android:exported="false">
@@ -103,11 +114,10 @@
             android:name=".IntentSenderReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.example.mdm_client_base.INTENT_SENDER_RESULT" />
+                <action android:name="com.example.mdm_client_base.INSTALL_RESULT" />
             </intent-filter>
         </receiver>
 
-        <!-- Boot Receiver -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -118,8 +128,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
-        
-        <!-- Notification Receiver -->
+
         <receiver
             android:name=".NotificationReceiver"
             android:exported="false">
@@ -136,7 +145,7 @@
             android:foregroundServiceType="dataSync"
             tools:replace="android:exported" />
 
-        <!-- File Provider -->
+        <!-- File Provider (usando o nome correto do seu arquivo) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.example.mdm_client_base.fileprovider"
@@ -151,10 +160,9 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-            
     </application>
-    
-    <!-- Queries for package visibility (Android 11+) -->
+
+    <!-- Queries para visibilidade de pacotes (Android 11+) -->
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
@@ -164,6 +172,9 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.INSTALL_PACKAGE" />
+        </intent>
     </queries>
-    
+
 </manifest>
