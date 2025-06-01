@@ -248,10 +248,11 @@ class MainActivity : FlutterActivity() {
 
                         // Verificar status atual das restrições
                         restrictionMap.forEach { (key, restriction) ->
-                            val isRestricted = devicePolicyManager.getUserRestrictions(adminComponent).contains(restriction)
-                            currentStatus[key] = isRestricted
-                            Log.d(TAG, "Restrição $key: atualmente ${if (isRestricted) "ativa" else "inativa"}")
-                        }
+    val userRestrictions = devicePolicyManager.getUserRestrictions(adminComponent)
+    val isRestricted = userRestrictions.getBoolean(restriction, false)
+    currentStatus[key] = isRestricted
+    Log.d(TAG, "Restrição $key: atualmente ${if (isRestricted) "ativa" else "inativa"}")
+}
 
                         // Processar cada restrição solicitada
                         restrictions.forEach { (key, enable) ->
