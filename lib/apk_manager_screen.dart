@@ -16,15 +16,18 @@ class ApkManagerScreen extends StatefulWidget {
   const ApkManagerScreen({super.key});
 
   @override
+  // ignore: library_private_types_in_public_api
   _ApkManagerScreenState createState() => _ApkManagerScreenState();
 }
 
 class _ApkManagerScreenState extends State<ApkManagerScreen> {
   final Logger _logger = Logger('ApkManagerScreen');
+  // ignore: unused_field
   final DeviceService _deviceService = DeviceService();
   static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
   String _serverUrl = 'http://192.168.0.6:3000/public';
   List<Map<String, dynamic>> _apks = [];
+  // ignore: prefer_final_fields
   Map<String, bool> _isInstalling = {};
   bool _isLoading = true;
 
@@ -229,6 +232,7 @@ class _ApkManagerScreenState extends State<ApkManagerScreen> {
     }
     
     final fileSize = await apkFile.length();
+    // ignore: unnecessary_brace_in_string_interps
     _logger.info('Arquivo APK confirmado: $apkPath (${fileSize} bytes)');
 
     // Instalar APK

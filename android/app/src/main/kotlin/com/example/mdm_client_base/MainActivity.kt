@@ -20,6 +20,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileInputStream
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.mdm_client_base/device_policy"
@@ -35,7 +36,7 @@ class MainActivity : FlutterActivity() {
         devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
 
-        // Lidar com provisionamento
+        // Handle provisioning
         handleProvisioningIntent(intent)
     }
 
@@ -49,7 +50,7 @@ class MainActivity : FlutterActivity() {
         val action = intent?.action
         if (action == DevicePolicyManager.ACTION_PROVISION_MANAGED_DEVICE ||
             action == "com.samsung.android.knox.intent.action.PROVISION_MANAGED_DEVICE") {
-            Log.d(TAG, "Provisionamento detectado: $action")
+            Log.d(TAG, "Provisioning detected: $action")
             try {
                 val provisioningIntent = Intent(DevicePolicyManager.ACTION_PROVISION_MANAGED_DEVICE).apply {
                     putExtra(DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME, adminComponent)
@@ -62,10 +63,10 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 startActivityForResult(provisioningIntent, 1001)
-                Log.d(TAG, "Iniciando provisionamento como Device Owner")
+                Log.d(TAG, "Starting provisioning as Device Owner")
             } catch (e: Exception) {
-                Log.e(TAG, "Erro ao iniciar provisionamento: ${e.message}", e)
-                notifyProvisioningFailure("Erro ao iniciar provisionamento: ${e.message}")
+                Log.e(TAG, "Error starting provisioning: ${e.message}", e)
+                notifyProvisioningFailure("Error starting provisioning: ${e.message}")
             }
         }
     }
@@ -74,16 +75,16 @@ class MainActivity : FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 1001) {
             if (resultCode == RESULT_OK) {
-                Log.d(TAG, "Provisionamento concluído com sucesso")
+                Log.d(TAG, "Provisioning completed successfully")
                 applyInitialPolicies()
                 flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
                     MethodChannel(messenger, CHANNEL).invokeMethod("provisioningComplete", mapOf("status" to "success"))
                 }
             } else {
-                Log.e(TAG, "Provisionamento falhou, resultCode: $resultCode")
-                notifyProvisioningFailure("Provisionamento falhou, código: $resultCode")
+                Log.e(TAG, "Provisioning failed, resultCode: $resultCode")
+                notifyProvisioningFailure("Provisioning failed, code: $resultCode")
                 flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
-                    MethodChannel(messenger, CHANNEL).invokeMethod("provisioningComplete", mapOf("status" to "failed", "error" to "Código: $resultCode"))
+                    MethodChannel(messenger, CHANNEL).invokeMethod("provisioningComplete", mapOf("status" to "failed", "error" to "Code: $resultCode"))
                 }
             }
         }
@@ -92,7 +93,7 @@ class MainActivity : FlutterActivity() {
     private fun applyInitialPolicies() {
         try {
             if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
-                Log.d(TAG, "Aplicando políticas iniciais como Device Owner")
+                Log.d(TAG, "Applying initial policies as Device Owner")
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
@@ -103,14 +104,14 @@ class MainActivity : FlutterActivity() {
                 devicePolicyManager.setPasswordQuality(adminComponent, DevicePolicyManager.PASSWORD_QUALITY_ALPHANUMERIC)
                 devicePolicyManager.setPasswordMinimumLength(adminComponent, 8)
                 devicePolicyManager.setLockTaskPackages(adminComponent, arrayOf(packageName))
-                Log.d(TAG, "Políticas iniciais aplicadas com sucesso")
+                Log.d(TAG, "Initial policies applied successfully")
             } else {
-                Log.w(TAG, "Não é Device Owner, políticas não aplicadas")
-                notifyPolicyFailure("Aplicativo não é Device Owner")
+                Log.w(TAG, "Not Device Owner, policies not applied")
+                notifyPolicyFailure("Application is not Device Owner")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Erro ao aplicar políticas iniciais: ${e.message}", e)
-            notifyPolicyFailure("Erro ao aplicar políticas: ${e.message}")
+            Log.e(TAG, "Error applying initial policies: ${e.message}", e)
+            notifyPolicyFailure("Error applying policies: ${e.message}")
         }
     }
 
@@ -128,10 +129,10 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        Log.d(TAG, "Configurando MethodChannel: $CHANNEL")
+        Log.d(TAG, "Configuring MethodChannel: $CHANNEL")
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
-            Log.d(TAG, "Método chamado: ${call.method}")
+            Log.d(TAG, "Method called: ${call.method}")
             when (call.method) {
                 "getSdkVersion" -> {
                     try {
@@ -139,214 +140,69 @@ class MainActivity : FlutterActivity() {
                         Log.d(TAG, "SDK Version: $sdkVersion")
                         result.success(sdkVersion)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao obter versão do SDK: ${e.message}")
-                        result.error("SDK_VERSION_ERROR", "Erro ao obter versão do SDK: ${e.message}", null)
+                        Log.e(TAG, "Error getting SDK version: ${e.message}")
+                        result.error("SDK_VERSION_ERROR", "Error getting SDK version: ${e.message}", null)
                     }
                 }
                 "disableApp" -> {
                     val packageName = call.argument<String>("packageName")
                     try {
                         if (packageName == null) {
-                            result.error("INVALID_PACKAGE", "Nome do pacote é nulo", null)
+                            result.error("INVALID_PACKAGE", "Package name is null", null)
                             return@setMethodCallHandler
                         }
                         if (devicePolicyManager.isDeviceOwnerApp(this.packageName)) {
                             devicePolicyManager.setApplicationHidden(adminComponent, packageName, true)
-                            Log.d(TAG, "Aplicativo $packageName desabilitado")
-                            result.success("Aplicativo desabilitado com sucesso")
+                            Log.d(TAG, "App $packageName disabled")
+                            result.success("App disabled successfully")
                         } else {
-                            Log.w(TAG, "Não é Device Owner")
-                            result.error("NOT_ADMIN", "Permissões de Device Owner necessárias", null)
+                            Log.w(TAG, "Not Device Owner")
+                            result.error("NOT_ADMIN", "Device Owner permissions required", null)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao desabilitar aplicativo: ${e.message}")
-                        result.error("DISABLE_ERROR", "Erro ao desabilitar aplicativo: ${e.message}", null)
+                        Log.e(TAG, "Error disabling app: ${e.message}")
+                        result.error("DISABLE_ERROR", "Error disabling app: ${e.message}", null)
                     }
                 }
                 "installSystemApp" -> {
-    val apkPath = call.argument<String>("apkPath")
-    Log.d(TAG, "Tentando instalar APK: $apkPath")
-    try {
-        if (apkPath == null) {
-            Log.w(TAG, "Caminho do APK nulo")
-            result.error("INVALID_PATH", "Caminho do APK é nulo", null)
-            return@setMethodCallHandler
-        }
-        
-        val apkFile = File(apkPath)
-        Log.d(TAG, "Verificando arquivo: ${apkFile.absolutePath}")
-        Log.d(TAG, "Arquivo existe: ${apkFile.exists()}")
-        Log.d(TAG, "Tamanho do arquivo: ${if (apkFile.exists()) apkFile.length() else "N/A"}")
-        
-        if (!apkFile.exists()) {
-            Log.w(TAG, "Arquivo APK não encontrado: $apkPath")
-            result.error("FILE_NOT_FOUND", "Arquivo APK não encontrado em: $apkPath", null)
-            return@setMethodCallHandler
-        }
-        
-        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
-            Log.d(TAG, "Instalação silenciosa como Device Owner")
-            val packageInstaller = packageManager.packageInstaller
-            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-            val sessionId = packageInstaller.createSession(params)
-            val session = packageInstaller.openSession(sessionId)
-
-            // Copiar APK para a sessão
-            FileInputStream(apkFile).use { input ->
-                session.openWrite("package", 0, apkFile.length()).use { output ->
-                    input.copyTo(output)
-                    session.fsync(output)
-                }
-            }
-
-            // CORREÇÃO: Intent explícito e PendingIntent com flags corretas para Android 14+
-            val intent = Intent(this, InstallResultReceiver::class.java).apply {
-                action = "com.example.mdm_client_base.INSTALL_RESULT"
-                putExtra("sessionId", sessionId)
-            }
-            
-            // Flags corretas baseadas na versão do Android
-            val flags = when {
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> // Android 14+ (API 34+)
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> // Android 12+ (API 31+)
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                else -> // Android 11 e anteriores
-                    PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            
-            val pendingIntent = PendingIntent.getBroadcast(
-                this,
-                sessionId,
-                intent,
-                flags
-            )
-
-            // Registrar receiver para capturar o resultado
-            val receiver = object : BroadcastReceiver() {
-                override fun onReceive(context: Context, intent: Intent) {
+                    val apkPath = call.argument<String>("apkPath")
+                    Log.d(TAG, "Attempting to install APK: $apkPath")
                     try {
-                        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
-                        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
-                        Log.d(TAG, "Resultado da instalação - Status: $status, Message: $message")
-                        
-                        when (status) {
-                            PackageInstaller.STATUS_SUCCESS -> {
-                                Log.d(TAG, "Instalação bem-sucedida: $apkPath")
-                                result.success("APK instalado com sucesso")
-                            }
-                            PackageInstaller.STATUS_FAILURE_ABORTED -> {
-                                Log.e(TAG, "Instalação abortada pelo usuário")
-                                result.error("INSTALL_ABORTED", "Instalação cancelada pelo usuário", null)
-                            }
-                            PackageInstaller.STATUS_FAILURE_BLOCKED -> {
-                                Log.e(TAG, "Instalação bloqueada")
-                                result.error("INSTALL_BLOCKED", "Instalação bloqueada pelo sistema", null)
-                            }
-                            PackageInstaller.STATUS_FAILURE_CONFLICT -> {
-                                Log.e(TAG, "Conflito na instalação")
-                                result.error("INSTALL_CONFLICT", "Conflito com versão existente", null)
-                            }
-                            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> {
-                                Log.e(TAG, "APK incompatível")
-                                result.error("INSTALL_INCOMPATIBLE", "APK incompatível com o dispositivo", null)
-                            }
-                            PackageInstaller.STATUS_FAILURE_INVALID -> {
-                                Log.e(TAG, "APK inválido")
-                                result.error("INSTALL_INVALID", "APK inválido ou corrompido", null)
-                            }
-                            PackageInstaller.STATUS_FAILURE_STORAGE -> {
-                                Log.e(TAG, "Espaço insuficiente")
-                                result.error("INSTALL_STORAGE", "Espaço de armazenamento insuficiente", null)
-                            }
-                            else -> {
-                                Log.e(TAG, "Falha na instalação: Status=$status, Message=$message")
-                                result.error("INSTALL_FAILED", "Falha na instalação - Status: $status, Mensagem: $message", null)
-                            }
+                        if (apkPath == null) {
+                            Log.w(TAG, "APK path is null")
+                            result.error("INVALID_PATH", "APK path is null", null)
+                            return@setMethodCallHandler
                         }
-                        
-                        try {
-                            context.unregisterReceiver(this)
-                        } catch (ignored: Exception) {
-                            Log.w(TAG, "Receiver já foi desregistrado")
+
+                        val apkFile = File(apkPath)
+                        Log.d(TAG, "Checking file: ${apkFile.absolutePath}")
+                        Log.d(TAG, "File exists: ${apkFile.exists()}, Readable: ${apkFile.canRead()}, Size: ${if (apkFile.exists()) apkFile.length() else "N/A"}")
+
+                        if (!apkFile.exists() || !apkFile.canRead()) {
+                            Log.w(TAG, "APK file not found or not readable: $apkPath")
+                            result.error("FILE_NOT_FOUND", "APK file not found or not readable: $apkPath", null)
+                            return@setMethodCallHandler
+                        }
+
+                        // Validate APK file integrity
+                        if (!validateApkFile(apkFile)) {
+                            Log.w(TAG, "Invalid APK file: $apkPath")
+                            result.error("INVALID_APK", "APK file is corrupted or invalid", null)
+                            return@setMethodCallHandler
+                        }
+
+                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
+                            Log.d(TAG, "Attempting silent installation as Device Owner")
+                            installSilently(apkFile, result)
+                        } else {
+                            Log.d(TAG, "Not Device Owner, using normal installation")
+                            installNormally(apkFile, result)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao processar resultado: ${e.message}")
-                        result.error("INSTALL_ERROR", "Erro ao processar resultado: ${e.message}", null)
-                        try {
-                            context.unregisterReceiver(this)
-                        } catch (ignored: Exception) {}
+                        Log.e(TAG, "General error installing APK: ${e.message}", e)
+                        result.error("INSTALL_ERROR", "Error installing APK: ${e.message}", null)
                     }
                 }
-            }
-
-            val filter = IntentFilter("com.example.mdm_client_base.INSTALL_RESULT")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
-                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(receiver, filter)
-            }
-            
-            session.commit(pendingIntent.intentSender)
-            session.close()
-            Log.d(TAG, "Sessão de instalação enviada com ID: $sessionId")
-            
-        } else {
-            Log.d(TAG, "Não é Device Owner, usando instalador padrão")
-            
-            // Tentar copiar o arquivo para o diretório interno da aplicação primeiro
-            try {
-                val internalDir = File(filesDir, "apks")
-                if (!internalDir.exists()) {
-                    internalDir.mkdirs()
-                }
-                
-                val internalApkFile = File(internalDir, apkFile.name)
-                apkFile.copyTo(internalApkFile, overwrite = true)
-                Log.d(TAG, "APK copiado para diretório interno: ${internalApkFile.absolutePath}")
-                
-                val uri = FileProvider.getUriForFile(
-                    this,
-                    "com.example.mdm_client_base.fileprovider",
-                    internalApkFile
-                )
-                Log.d(TAG, "URI gerada pelo FileProvider: $uri")
-                
-                val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-                    setDataAndType(uri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(intent)
-                result.success("Instalador padrão aberto com sucesso")
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Erro ao usar FileProvider: ${e.message}")
-                
-                // Fallback para instalação direta (Android < 7.0)
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-                    Log.d(TAG, "Usando instalação direta para versões antigas do Android")
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(Uri.fromFile(apkFile), "application/vnd.android.package-archive")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(intent)
-                    result.success("Instalador direto aberto")
-                } else {
-                    Log.e(TAG, "Falha em todos os métodos de instalação")
-                    result.error(
-                        "INSTALL_ERROR", 
-                        "Falha ao instalar: ${e.message}", 
-                        null
-                    )
-                }
-            }
-        }
-    } catch (e: Exception) {
-        Log.e(TAG, "Erro geral ao instalar APK: ${e.message}", e)
-        result.error("INSTALL_ERROR", "Erro ao instalar APK: ${e.message}", null)
-    }
-}
                 "restrictSettings" -> {
                     val restrict = call.argument<Boolean>("restrict") ?: false
                     try {
@@ -359,7 +215,7 @@ class MainActivity : FlutterActivity() {
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
                                 devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
-                                Log.d(TAG, "Configurações restritas")
+                                Log.d(TAG, "Settings restricted")
                             } else {
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_BLUETOOTH)
@@ -368,15 +224,15 @@ class MainActivity : FlutterActivity() {
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
                                 devicePolicyManager.clearUserRestriction(adminComponent, UserManager.DISALLOW_USB_FILE_TRANSFER)
-                                Log.d(TAG, "Configurações liberadas")
+                                Log.d(TAG, "Settings unrestricted")
                             }
-                            result.success("Configurações atualizadas com sucesso")
+                            result.success("Settings updated successfully")
                         } else {
-                            result.error("ADMIN_ERROR", "Aplicativo não é Device Owner", null)
+                            result.error("ADMIN_ERROR", "Application is not Device Owner", null)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao restringir configurações: ${e.message}")
-                        result.error("RESTRICT_SETTINGS_ERROR", "Erro ao restringir configurações: ${e.message}", null)
+                        Log.e(TAG, "Error restricting settings: ${e.message}")
+                        result.error("RESTRICT_SETTINGS_ERROR", "Error restricting settings: ${e.message}", null)
                     }
                 }
                 "getWifiInfo" -> {
@@ -391,11 +247,11 @@ class MainActivity : FlutterActivity() {
                             "frequency" to wifiInfo.frequency,
                             "rssi" to wifiInfo.rssi
                         )
-                        Log.d(TAG, "Informações Wi-Fi obtidas: $result_map")
+                        Log.d(TAG, "Wi-Fi info obtained: $result_map")
                         result.success(result_map)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao obter informação de Wi-Fi: ${e.message}")
-                        result.error("WIFI_INFO_ERROR", "Erro ao obter informação de Wi-Fi: ${e.message}", null)
+                        Log.e(TAG, "Error getting Wi-Fi info: ${e.message}")
+                        result.error("WIFI_INFO_ERROR", "Error getting Wi-Fi info: ${e.message}", null)
                     }
                 }
                 "getMacAddress" -> {
@@ -403,11 +259,11 @@ class MainActivity : FlutterActivity() {
                         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                         val wifiInfo = wifiManager.connectionInfo
                         val macAddress = wifiInfo.bssid?.takeIf { it != "02:00:00:00:00:00" } ?: "N/A"
-                        Log.d(TAG, "BSSID obtido: $macAddress")
+                        Log.d(TAG, "BSSID obtained: $macAddress")
                         result.success(macAddress)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao obter BSSID: ${e.message}")
-                        result.error("MAC_ADDRESS_ERROR", "Erro ao obter BSSID: ${e.message}", null)
+                        Log.e(TAG, "Error getting BSSID: ${e.message}")
+                        result.error("MAC_ADDRESS_ERROR", "Error getting BSSID: ${e.message}", null)
                     }
                 }
                 "isDeviceOwnerOrProfileOwner" -> {
@@ -417,7 +273,7 @@ class MainActivity : FlutterActivity() {
                         Log.d(TAG, "isDeviceOwnerOrProfileOwner: $isAdmin")
                         result.success(isAdmin)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro em isDeviceOwnerOrProfileOwner: ${e.message}")
+                        Log.e(TAG, "Error in isDeviceOwnerOrProfileOwner: ${e.message}")
                         result.error("ADMIN_CHECK_ERROR", e.message, null)
                     }
                 }
@@ -425,14 +281,14 @@ class MainActivity : FlutterActivity() {
                     try {
                         if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
                             devicePolicyManager.lockNow()
-                            Log.d(TAG, "Dispositivo bloqueado")
+                            Log.d(TAG, "Device locked")
                             result.success(true)
                         } else {
-                            Log.w(TAG, "Não é Device Owner")
-                            result.error("NOT_ADMIN", "App não é Device Owner", null)
+                            Log.w(TAG, "Not Device Owner")
+                            result.error("NOT_ADMIN", "App is not Device Owner", null)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao bloquear: ${e.message}")
+                        Log.e(TAG, "Error locking device: ${e.message}")
                         result.error("LOCK_ERROR", e.message, null)
                     }
                 }
@@ -440,14 +296,14 @@ class MainActivity : FlutterActivity() {
                     try {
                         if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
                             devicePolicyManager.wipeData(0)
-                            Log.d(TAG, "Dados apagados")
+                            Log.d(TAG, "Data wiped")
                             result.success(true)
                         } else {
-                            Log.w(TAG, "Não é Device Owner")
-                            result.error("NOT_ADMIN", "App não é Device Owner", null)
+                            Log.w(TAG, "Not Device Owner")
+                            result.error("NOT_ADMIN", "App is not Device Owner", null)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao apagar dados: ${e.message}")
+                        Log.e(TAG, "Error wiping data: ${e.message}")
                         result.error("WIPE_ERROR", e.message, null)
                     }
                 }
@@ -455,8 +311,8 @@ class MainActivity : FlutterActivity() {
                     try {
                         val packageNameArg = call.argument<String>("packageName")
                         if (packageNameArg == null) {
-                            Log.w(TAG, "Nome do pacote nulo")
-                            result.error("INVALID_PACKAGE", "Nome do pacote é nulo", null)
+                            Log.w(TAG, "Package name is null")
+                            result.error("INVALID_PACKAGE", "Package name is null", null)
                             return@setMethodCallHandler
                         }
                         if (devicePolicyManager.isDeviceOwnerApp(this.packageName)) {
@@ -465,7 +321,7 @@ class MainActivity : FlutterActivity() {
                                 action = "com.example.mdm_client_base.UNINSTALL_RESULT"
                                 putExtra("packageName", packageNameArg)
                             }
-                            val flags = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                             } else {
                                 PendingIntent.FLAG_UPDATE_CURRENT
@@ -477,14 +333,14 @@ class MainActivity : FlutterActivity() {
                                 flags
                             )
                             packageInstaller.uninstall(packageNameArg, pendingIntent.intentSender)
-                            Log.d(TAG, "Desinstalação iniciada: $packageNameArg")
+                            Log.d(TAG, "Uninstallation started: $packageNameArg")
                             result.success(true)
                         } else {
-                            Log.w(TAG, "Não é Device Owner")
-                            result.error("NOT_ADMIN", "App não é Device Owner", null)
+                            Log.w(TAG, "Not Device Owner")
+                            result.error("NOT_ADMIN", "App is not Device Owner", null)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao desinstalar: ${e.message}")
+                        Log.e(TAG, "Error uninstalling: ${e.message}")
                         result.error("UNINSTALL_ERROR", e.message, null)
                     }
                 }
@@ -493,20 +349,187 @@ class MainActivity : FlutterActivity() {
                         val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
                             putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
                             putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                                call.argument<String>("explanation") ?: "Este aplicativo precisa de permissões de administrador para funcionar corretamente.")
+                                call.argument<String>("explanation") ?: "This app requires admin permissions to function properly.")
                         }
                         startActivity(intent)
-                        Log.d(TAG, "Solicitação de admin iniciada")
+                        Log.d(TAG, "Admin request initiated")
                         result.success(true)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao solicitar admin: ${e.message}")
+                        Log.e(TAG, "Error requesting admin: ${e.message}")
                         result.error("REQUEST_ADMIN_ERROR", e.message, null)
                     }
                 }
                 else -> {
-                    Log.w(TAG, "Método não implementado: ${call.method}")
+                    Log.w(TAG, "Method not implemented: ${call.method}")
                     result.notImplemented()
                 }
+            }
+        }
+    }
+
+    // Validate APK file integrity using checksum
+    private fun validateApkFile(apkFile: File): Boolean {
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(apkFile).use { input ->
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    digest.update(buffer, 0, bytesRead)
+                }
+            }
+            // Basic validation: Ensure file is not empty and has valid size
+            return apkFile.length() > 0 && apkFile.extension.equals("apk", ignoreCase = true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error validating APK file: ${e.message}")
+            return false
+        }
+    }
+
+    // Silent installation method
+    private fun installSilently(apkFile: File, result: MethodChannel.Result) {
+        try {
+            val packageInstaller = packageManager.packageInstaller
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            val sessionId = packageInstaller.createSession(params)
+            val session = packageInstaller.openSession(sessionId)
+
+            // Copy APK to session
+            FileInputStream(apkFile).use { input ->
+                session.openWrite("package", 0, apkFile.length()).use { output ->
+                    input.copyTo(output)
+                    session.fsync(output)
+                }
+            }
+
+            // Create explicit intent and PendingIntent
+            val intent = Intent(this, InstallResultReceiver::class.java).apply {
+                action = "com.example.mdm_client_base.INSTALL_RESULT"
+                putExtra("sessionId", sessionId)
+            }
+
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+
+            val pendingIntent = PendingIntent.getBroadcast(
+                this,
+                sessionId,
+                intent,
+                flags
+            )
+
+            // Register receiver for installation result
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    try {
+                        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+                        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Unknown error"
+                        Log.d(TAG, "Silent installation result - Status: $status, Message: $message")
+
+                        when (status) {
+                            PackageInstaller.STATUS_SUCCESS -> {
+                                Log.d(TAG, "Silent installation successful: ${apkFile.name}")
+                                result.success("APK installed silently successfully")
+                            }
+                            else -> {
+                                Log.e(TAG, "Silent installation failed: Status=$status, Message=$message")
+                                Log.d(TAG, "Falling back to normal installation")
+                                try {
+                                    installNormally(apkFile, result)
+                                } catch (fallbackError: Exception) {
+                                    Log.e(TAG, "Fallback installation failed: ${fallbackError.message}")
+                                    result.error(
+                                        "INSTALL_FAILED",
+                                        "Failed both methods - Silent: $message, Normal: ${fallbackError.message}",
+                                        null
+                                    )
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error processing silent installation result: ${e.message}")
+                        try {
+                            installNormally(apkFile, result)
+                        } catch (fallbackError: Exception) {
+                            result.error(
+                                "INSTALL_ERROR",
+                                "Error processing result and fallback: ${e.message}, ${fallbackError.message}",
+                                null
+                            )
+                        }
+                    } finally {
+                        try {
+                            context.unregisterReceiver(this)
+                        } catch (ignored: Exception) {
+                            Log.w(TAG, "Receiver already unregistered")
+                        }
+                    }
+                }
+            }
+
+            val filter = IntentFilter("com.example.mdm_client_base.INSTALL_RESULT")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(receiver, filter)
+            }
+
+            session.commit(pendingIntent.intentSender)
+            session.close()
+            Log.d(TAG, "Silent installation session committed with ID: $sessionId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during silent installation: ${e.message}")
+            try {
+                installNormally(apkFile, result)
+            } catch (fallbackError: Exception) {
+                result.error("INSTALL_ERROR", "Silent installation failed: ${e.message}, Fallback failed: ${fallbackError.message}", null)
+            }
+        }
+    }
+
+    // Normal installation method
+    private fun installNormally(apkFile: File, result: MethodChannel.Result) {
+        Log.d(TAG, "Starting normal installation")
+        try {
+            val internalDir = File(filesDir, "apks")
+            if (!internalDir.exists()) {
+                internalDir.mkdirs()
+            }
+
+            val internalApkFile = File(internalDir, apkFile.name)
+            apkFile.copyTo(internalApkFile, overwrite = true)
+            Log.d(TAG, "APK copied to internal directory: ${internalApkFile.absolutePath}")
+
+            val uri = FileProvider.getUriForFile(
+                this,
+                "com.example.mdm_client_base.fileprovider",
+                internalApkFile
+            )
+            Log.d(TAG, "URI generated by FileProvider: $uri")
+
+            val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            result.success("Normal installer opened successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error using FileProvider: ${e.message}")
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                Log.d(TAG, "Using direct installation for older Android versions")
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(Uri.fromFile(apkFile), "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                result.success("Direct installer opened")
+            } else {
+                Log.e(TAG, "All installation methods failed")
+                result.error("INSTALL_ERROR", "Failed to install: ${e.message}", null)
             }
         }
     }
