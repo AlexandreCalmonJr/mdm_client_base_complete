@@ -1,17 +1,20 @@
 package com.example.mdm_client_base
 
-import android.app.admin.DevicePolicyManager
 import android.app.PendingIntent
+import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
 import android.os.UserManager
 import android.util.Log
-import androidx.core.content.FileProvider // Importação movida para o topo
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -130,6 +133,16 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             Log.d(TAG, "Método chamado: ${call.method}")
             when (call.method) {
+                "getSdkVersion" -> {
+                    try {
+                        val sdkVersion = Build.VERSION.SDK_INT
+                        Log.d(TAG, "SDK Version: $sdkVersion")
+                        result.success(sdkVersion)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Erro ao obter versão do SDK: ${e.message}")
+                        result.error("SDK_VERSION_ERROR", "Erro ao obter versão do SDK: ${e.message}", null)
+                    }
+                }
                 "disableApp" -> {
                     val packageName = call.argument<String>("packageName")
                     try {
@@ -151,55 +164,151 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "installSystemApp" -> {
-                    val apkPath = call.argument<String>("apkPath")
-                    Log.d(TAG, "Tentando instalar APK: $apkPath")
+    val apkPath = call.argument<String>("apkPath")
+    Log.d(TAG, "Tentando instalar APK: $apkPath")
+    try {
+        if (apkPath == null) {
+            Log.w(TAG, "Caminho do APK nulo")
+            result.error("INVALID_PATH", "Caminho do APK é nulo", null)
+            return@setMethodCallHandler
+        }
+        
+        val apkFile = File(apkPath)
+        Log.d(TAG, "Verificando arquivo: ${apkFile.absolutePath}")
+        Log.d(TAG, "Arquivo existe: ${apkFile.exists()}")
+        Log.d(TAG, "Tamanho do arquivo: ${if (apkFile.exists()) apkFile.length() else "N/A"}")
+        
+        if (!apkFile.exists()) {
+            Log.w(TAG, "Arquivo APK não encontrado: $apkPath")
+            result.error("FILE_NOT_FOUND", "Arquivo APK não encontrado em: $apkPath", null)
+            return@setMethodCallHandler
+        }
+        
+        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
+            Log.d(TAG, "Instalação silenciosa como Device Owner")
+            val packageInstaller = packageManager.packageInstaller
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            val sessionId = packageInstaller.createSession(params)
+            val session = packageInstaller.openSession(sessionId)
+
+            // Copiar APK para a sessão
+            FileInputStream(apkFile).use { input ->
+                session.openWrite("package", 0, apkFile.length()).use { output ->
+                    input.copyTo(output)
+                    session.fsync(output)
+                }
+            }
+
+            // Criar PendingIntent mutável
+            val intent = Intent("com.example.mdm_client_base.INSTALL_RESULT")
+            val pendingIntent = PendingIntent.getBroadcast(
+                this,
+                sessionId,
+                intent,
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            // Registrar receiver para capturar o resultado
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
                     try {
-                        if (apkPath == null) {
-                            Log.w(TAG, "Caminho do APK nulo")
-                            result.error("INVALID_PATH", "Caminho do APK é nulo", null)
-                            return@setMethodCallHandler
-                        }
-                        val apkFile = File(apkPath)
-                        if (!apkFile.exists()) {
-                            Log.w(TAG, "Arquivo APK não encontrado: $apkPath")
-                            result.error("FILE_NOT_FOUND", "Arquivo APK não encontrado", null)
-                            return@setMethodCallHandler
-                        }
-                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
-                            Log.d(TAG, "Instalação silenciosa como Device Owner")
-                            val packageInstaller = packageManager.packageInstaller
-                            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-                            val sessionId = packageInstaller.createSession(params)
-                            val session = packageInstaller.openSession(sessionId)
-                            val inputStream = FileInputStream(apkFile)
-                            val outputStream = session.openWrite("package", 0, apkFile.length())
-                            inputStream.copyTo(outputStream)
-                            session.fsync(outputStream)
-                            inputStream.close()
-                            outputStream.close()
-                            session.commit(IntentSenderReceiver.createIntentSender(this, sessionId))
-                            session.close()
-                            result.success("Instalação silenciosa iniciada")
-                        } else {
-                            Log.d(TAG, "Não é Device Owner, usando instalador padrão")
-                            val uri = FileProvider.getUriForFile(
-                                this,
-                                "com.example.mdm_client_base.fileprovider",
-                                apkFile
-                            )
-                            val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-                                setDataAndType(uri, "application/vnd.android.package-archive")
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+                        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                        when (status) {
+                            PackageInstaller.STATUS_SUCCESS -> {
+                                Log.d(TAG, "Instalação bem-sucedida: $apkPath")
+                                result.success("APK instalado com sucesso")
                             }
-                            startActivity(intent)
-                            result.success("Instalador padrão aberto")
+                            else -> {
+                                Log.e(TAG, "Falha na instalação: Status=$status, Message=$message")
+                                result.error("INSTALL_FAILED", "Falha na instalação - Status: $status, Mensagem: $message", null)
+                            }
                         }
+                        context.unregisterReceiver(this)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao instalar APK: ${e.message}", e)
-                        result.error("INSTALL_ERROR", "Erro ao instalar APK: ${e.message}", null)
+                        Log.e(TAG, "Erro ao processar resultado: ${e.message}")
+                        result.error("INSTALL_ERROR", "Erro ao processar resultado: ${e.message}", null)
+                        try {
+                            context.unregisterReceiver(this)
+                        } catch (ignored: Exception) {}
                     }
                 }
+            }
+
+            registerReceiver(receiver, IntentFilter("com.example.mdm_client_base.INSTALL_RESULT"))
+            session.commit(pendingIntent.intentSender)
+            session.close()
+        } else {
+            Log.d(TAG, "Não é Device Owner, usando instalador padrão")
+            
+            // SOLUÇÃO 1: Tentar copiar o arquivo para o diretório interno da aplicação primeiro
+            try {
+                val internalDir = File(filesDir, "apks")
+                if (!internalDir.exists()) {
+                    internalDir.mkdirs()
+                }
+                
+                val internalApkFile = File(internalDir, apkFile.name)
+                apkFile.copyTo(internalApkFile, overwrite = true)
+                Log.d(TAG, "APK copiado para diretório interno: ${internalApkFile.absolutePath}")
+                
+                val uri = FileProvider.getUriForFile(
+                    this,
+                    "com.example.mdm_client_base.fileprovider",
+                    internalApkFile
+                )
+                Log.d(TAG, "URI gerada pelo FileProvider: $uri")
+                
+                val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                result.success("Instalador padrão aberto com sucesso")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro ao usar FileProvider: ${e.message}")
+                
+                // SOLUÇÃO 2: Fallback para instalação direta (Android < 7.0)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                    Log.d(TAG, "Usando instalação direta para versões antigas do Android")
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(Uri.fromFile(apkFile), "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                    result.success("Instalador direto aberto")
+                } else {
+                    // SOLUÇÃO 3: Tentar usar um método alternativo para Android 7.0+
+                    try {
+                        Log.d(TAG, "Tentando método alternativo de instalação")
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(
+                                Uri.parse("file://$apkPath"),
+                                "application/vnd.android.package-archive"
+                            )
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivity(intent)
+                        result.success("Método alternativo de instalação iniciado")
+                    } catch (alternativeException: Exception) {
+                        Log.e(TAG, "Todos os métodos de instalação falharam")
+                        result.error(
+                            "INSTALL_ERROR", 
+                            "Falha em todos os métodos de instalação. FileProvider: ${e.message}, Alternativo: ${alternativeException.message}", 
+                            null
+                        )
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Erro geral ao instalar APK: ${e.message}", e)
+        result.error("INSTALL_ERROR", "Erro ao instalar APK: ${e.message}", null)
+    }
+}
                 "restrictSettings" -> {
                     val restrict = call.argument<Boolean>("restrict") ?: false
                     try {
@@ -345,7 +454,7 @@ class MainActivity : FlutterActivity() {
                     try {
                         val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
                             putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
-                            putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, 
+                            putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION,
                                 call.argument<String>("explanation") ?: "Este aplicativo precisa de permissões de administrador para funcionar corretamente.")
                         }
                         startActivity(intent)

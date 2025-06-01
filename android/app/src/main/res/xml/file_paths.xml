@@ -1,5 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-  <cache-path name="cache" path="." />
-  <files-path name="files" path="." />
+    <!-- Diretório interno da aplicação -->
+    <files-path name="internal_files" path="." />
+    
+    <!-- Cache interno da aplicação -->
+    <cache-path name="internal_cache" path="." />
+    
+    <!-- Armazenamento externo específico da aplicação -->
+    <external-files-path name="external_files" path="." />
+    
+    <!-- Cache externo específico da aplicação -->
+    <external-cache-path name="external_cache" path="." />
+    
+    <!-- IMPORTANTE: Para acessar Downloads públicas -->
+    <external-path name="external_downloads" path="Download" />
+    
+    <!-- Root do armazenamento externo (usar com cuidado) -->
+    <external-path name="external_storage_root" path="." />
+    
+    <!-- Diretório de Downloads específico -->
+    <external-path name="downloads" path="Download/" />
 </paths>

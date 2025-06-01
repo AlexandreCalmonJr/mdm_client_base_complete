@@ -12,6 +12,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:logging/logging.dart';
+import 'package:mdm_client_base/login_screen.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -140,7 +141,6 @@ class MyApp extends StatelessWidget {
     );
   }
 
-  // Extraído para método separado para melhor organização
   ThemeData _buildAppTheme() {
     return ThemeData(
       useMaterial3: true,
@@ -148,6 +148,7 @@ class MyApp extends StatelessWidget {
         seedColor: Colors.blue,
         brightness: Brightness.light,
       ),
+      fontFamily: 'Inter', // Adiciona a fonte Inter
       appBarTheme: const AppBarTheme(
         centerTitle: true,
         elevation: 2,
@@ -173,20 +174,39 @@ class MyApp extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
         ),
       ),
+      inputDecorationTheme: InputDecorationTheme(
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.grey[400]!),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Colors.blue, width: 2),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Colors.red, width: 2),
+        ),
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      ),
     );
   }
 
-  // Extraído para método separado para melhor organização
   Map<String, WidgetBuilder> _buildRoutes() {
     return {
-      '/': (context) => HomePage(deviceService: DeviceService()),
+      '/': (context) => const LoginScreen(),
+      '/home': (context) => HomePage(deviceService: DeviceService()),
       '/provisioning_status': (context) => const ProvisioningStatusScreen(),
       '/apk_manager': (context) => const ApkManagerScreen(),
       '/settings': (context) => const MDMClientHome(),
     };
   }
 }
-
 class HomePage extends StatelessWidget {
   final DeviceService deviceService;
   static final Logger _logger = Logger('HomePage');
@@ -228,34 +248,34 @@ class HomePage extends StatelessWidget {
   }
 
   Widget _buildBody(BuildContext context, ColorScheme colorScheme) {
-  return Container(
-    decoration: BoxDecoration(
-      gradient: LinearGradient(
-        colors: [
-          colorScheme.surface,
-          colorScheme.surfaceContainerHighest.withOpacity(0.3),
-        ],
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-      ),
-    ),
-    child: SafeArea(
-      child: SingleChildScrollView(  // ✅ Adiciona scroll
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildHeaderCard(context, colorScheme),
-            const SizedBox(height: 32),
-            _buildMenuSection(context), // ✅ Remove Expanded
-            const SizedBox(height: 20),
-            _buildVersionInfo(context, colorScheme),
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            colorScheme.surface,
+            colorScheme.surfaceContainerHighest.withOpacity(0.3),
           ],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
         ),
       ),
-    ),
-  );
-}
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildHeaderCard(context, colorScheme),
+              const SizedBox(height: 32),
+              _buildMenuSection(context),
+              const SizedBox(height: 20),
+              _buildVersionInfo(context, colorScheme),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildHeaderCard(BuildContext context, ColorScheme colorScheme) {
     return Card(
@@ -272,17 +292,17 @@ class HomePage extends StatelessWidget {
             Text(
               'Gerenciamento de Dispositivos',
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: colorScheme.onSurface,
-              ),
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.onSurface,
+                  ),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             Text(
               'Sistema de controle e monitoramento MDM',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
+                    color: colorScheme.onSurfaceVariant,
+                  ),
               textAlign: TextAlign.center,
             ),
           ],
@@ -292,8 +312,7 @@ class HomePage extends StatelessWidget {
   }
 
   Widget _buildMenuSection(BuildContext context) {
-  return SingleChildScrollView(
-    child: Column(
+    return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         _buildMenuCard(
@@ -304,7 +323,7 @@ class HomePage extends StatelessWidget {
           color: Colors.green,
           onTap: () => _navigateToRoute(context, '/provisioning_status'),
         ),
-        const SizedBox(height: 4), // ✅ Reduzido espaçamento
+        const SizedBox(height: 4),
         _buildMenuCard(
           context: context,
           title: 'Gerenciador de APKs',
@@ -313,7 +332,7 @@ class HomePage extends StatelessWidget {
           color: Colors.blue,
           onTap: () => _navigateToRoute(context, '/apk_manager'),
         ),
-        const SizedBox(height: 4), // ✅ Reduzido espaçamento
+        const SizedBox(height: 4),
         _buildMenuCard(
           context: context,
           title: 'Configurações do Dispositivo',
@@ -322,17 +341,69 @@ class HomePage extends StatelessWidget {
           color: Colors.orange,
           onTap: () => _navigateToSettings(context),
         ),
+        const SizedBox(height: 4),
+        // Novo card com botões de bloquear/desbloquear configurações
+        _buildControlSettingsCard(context),
       ],
-    ),
-  );
-}
+    );
+  }
+
+  // Novo método para o card de controle de configurações
+  Widget _buildControlSettingsCard(BuildContext context) {
+    return Card(
+      elevation: 6,
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Controle de Configurações',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 5),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ElevatedButton(
+                  onPressed: () => _restrictSettings(context),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  ),
+                  child: const Text(
+                    'Bloquear',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+                const SizedBox(width: 5),
+                ElevatedButton(
+                  onPressed: () => _unrestrictSettings(context),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  ),
+                  child: const Text(
+                    'Desbloquear',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildVersionInfo(BuildContext context, ColorScheme colorScheme) {
     return Text(
-      'MDM Client v1.0',
+      'MDM Client v2.0 - Desenvolvido por Allexandre Calmon - TI Bahia 2025',
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-        color: colorScheme.onSurfaceVariant,
-      ),
+            color: colorScheme.onSurfaceVariant,
+          ),
       textAlign: TextAlign.center,
     );
   }
@@ -388,15 +459,15 @@ class HomePage extends StatelessWidget {
         Text(
           title,
           style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
+                fontWeight: FontWeight.bold,
+              ),
         ),
         const SizedBox(height: 4),
         Text(
           subtitle,
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
         ),
       ],
     );
@@ -410,7 +481,7 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // Métodos de navegação extraídos para melhor organização e reutilização
+  // Métodos de navegação
   void _navigateToRoute(BuildContext context, String route) {
     _logger.info('Navegando para $route');
     Navigator.pushNamed(context, route);
@@ -418,11 +489,8 @@ class HomePage extends StatelessWidget {
 
   Future<void> _navigateToSettings(BuildContext context) async {
     _logger.info('Abrindo configurações do dispositivo');
-    
     try {
       await Navigator.pushNamed(context, '/settings');
-      
-      // Verificar se o widget ainda está montado antes de usar o context
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -433,13 +501,69 @@ class HomePage extends StatelessWidget {
       }
     } catch (e) {
       _logger.severe('Erro ao navegar para configurações: $e');
-      
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Erro ao abrir configurações'),
             backgroundColor: Colors.red,
             duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  // Métodos para bloquear/desbloquear configurações
+  Future<void> _restrictSettings(BuildContext context) async {
+    _logger.info('Tentando bloquear configurações do dispositivo');
+    try {
+      const platform = MethodChannel('com.example.mdm_client_base/device_policy');
+      await platform.invokeMethod('restrictSettings', {'restrict': true});
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Configurações do dispositivo bloqueadas'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      _logger.info('Configurações bloqueadas com sucesso');
+    } catch (e) {
+      _logger.severe('Erro ao bloquear configurações: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao bloquear configurações: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _unrestrictSettings(BuildContext context) async {
+    _logger.info('Tentando desbloquear configurações do dispositivo');
+    try {
+      const platform = MethodChannel('com.example.mdm_client_base/device_policy');
+      await platform.invokeMethod('restrictSettings', {'restrict': false});
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Configurações do dispositivo desbloqueadas'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      _logger.info('Configurações desbloqueadas com sucesso');
+    } catch (e) {
+      _logger.severe('Erro ao desbloquear configurações: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao desbloquear configurações: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 2),
           ),
         );
       }
