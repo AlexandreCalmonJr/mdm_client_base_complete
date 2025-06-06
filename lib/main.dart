@@ -174,7 +174,7 @@ class DeviceService {
     final prefs = await SharedPreferences.getInstance();
 
     deviceInfo = {
-      'device_name': androidInfo.device,
+      'device_name': androidInfo.name,
       'device_model': androidInfo.model,
       'device_id': androidInfo.id,
       'serial_number': prefs.getString('serial_number') ?? 'N/A',
