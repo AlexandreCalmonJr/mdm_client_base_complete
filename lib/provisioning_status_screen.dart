@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:logging/logging.dart';
+import 'package:mdm_client_base/main.dart';
 import 'package:mdm_client_base/notification_service.dart';
+// Importe o DeviceService
 
  // Supondo que este seja o pacote base para MDM
 
@@ -21,13 +23,55 @@ class _ProvisioningStatusScreenState extends State<ProvisioningStatusScreen> {
   static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
 
   @override
-  void initState() {
-    super.initState();
-    _logger.info('Initializing ProvisioningStatusScreen');
-    NotificationService.instance.initialize();
-    _checkProvisioningStatus();
-    _setupMethodChannel();
+ @override
+void initState() {
+  super.initState();
+  _fetchAndApplyProvisioningExtras();
+}
+
+Future<void> _fetchAndApplyProvisioningExtras() async {
+  try {
+    // Chama o método nativo para obter os dados do QR Code
+    final Map<dynamic, dynamic>? extras = await platform.invokeMethod('getProvisioningExtras');
+    
+    if (extras != null) {
+      final String? serverHost = extras['server_host'];
+      final String? serverPort = extras['server_port'];
+      final String? authToken = extras['auth_token'];
+
+      // LOG IMPORTANTE: Verifique se os dados estão corretos
+      print('Dados de provisionamento recebidos: $extras');
+
+      if (serverHost != null && serverPort != null && authToken != null) {
+        // Agora, salve essas informações de forma segura e configure o app
+        final deviceService = DeviceService(); // Sua classe de serviço
+        await deviceService.saveSettings({
+            'server_host': serverHost,
+            'server_port': serverPort,
+            'auth_token': authToken,
+            // Preencha outros campos como serial/imei se necessário ou deixe para depois
+            'serial_number': 'PROVISIONED-${DateTime.now().millisecondsSinceEpoch}',
+            'imei': '',
+        });
+        
+        setState(() {
+          _status = 'Provisionado com sucesso via QR Code!';
+        });
+        
+        // Inicie o envio de dados para o servidor
+        await deviceService.sendDeviceData();
+
+      } else {
+        setState(() => _status = 'Falha: Dados de provisionamento incompletos.');
+      }
+    } else {
+       setState(() => _status = 'Dispositivo não provisionado via QR Code.');
+    }
+  } catch (e) {
+    setState(() => _status = 'Erro ao buscar dados de provisionamento: $e');
   }
+}
+
 
   Future<void> _checkProvisioningStatus() async {
     try {
