@@ -31,11 +31,7 @@ Para começar com o desenvolvimento Flutter, consulte os recursos oficiais:
 ### **Instalação e Configuração**
 
 1. **Clone o Repositório:**  
-<<<<<<< HEAD
-   git clone https://github.com/your\_username/mdm\_client\_base.git  
-=======
    git clone <https://github.com/your\_username/mdm\_client\_base.git>  
->>>>>>> retorno
    cd mdm\_client\_base
 
 2. **Obtenha as Dependências:**  
