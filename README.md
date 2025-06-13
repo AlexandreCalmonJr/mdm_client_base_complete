@@ -118,10 +118,6 @@ O projeto conta com os seguintes pacotes-chave do Flutter e Dart:
 
 ## **🤝 Contribuições**
 
-<<<<<<< HEAD
-Contribuições são muito bem-vindas\! Se tiver sugestões, encontrar um bug ou quiser adicionar uma nova funcionalidade, sinta-se à vontade para abrir uma issue ou enviar um pull request.
-=======
 Contribuições são muito bem-vindas\! Se tiver sugestões, encontrar um bug ou quiser adicionar uma nova funcionalidade, sinta-se à vontade para abrir uma issue ou enviar um pull request.
 
 ## Criador : Alexandre de Souza Calmon Junior
->>>>>>> retorno
