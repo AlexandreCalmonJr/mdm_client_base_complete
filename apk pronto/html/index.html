@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador de QR Code para Provisionamento MDM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom styles for better button appearance */
+        .btn-primary {
+            background-image: linear-gradient(to right, #6366f1, #8b5cf6);
+            transition: all 0.2s ease-in-out;
+        }
+        .btn-primary:hover {
+            background-position: right center;
+            box-shadow: 0 4px 15px 0 rgba(0, 0, 0, 0.2);
+        }
+        .btn-copy {
+            background-color: #10B981; /* Emerald 500 */
+            transition: all 0.2s ease-in-out;
+        }
+        .btn-copy:hover {
+            background-color: #059669; /* Emerald 600 */
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900 flex flex-col items-center justify-center min-h-screen p-4 sm:p-6 lg:p-8">
+    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-lg w-full max-w-4xl border border-gray-200">
+        <h1 class="text-3xl sm:text-4xl font-bold text-center text-indigo-700 mb-6">Gerador de QR Code para Provisionamento MDM</h1>
+        <p class="text-center text-gray-600 mb-8">Preencha os campos abaixo para gerar o QR Code de provisionamento do seu dispositivo Android.</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div>
+                <label for="apkUrl" class="block text-sm font-medium text-gray-700 mb-1">URL de Download do APK <span class="text-red-500">*</span></label>
+                <input type="url" id="apkUrl" placeholder="https://seu-servidor.com/app.apk"
+                       class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" required>
+            </div>
+
+            <div>
+                <label for="apkChecksum" class="block text-sm font-medium text-gray-700 mb-1">Checksum SHA-256 do APK <span class="text-red-500">*</span></label>
+                <input type="text" id="apkChecksum" placeholder="Ex: 50D27027C0E7682C..."
+                       class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" required>
+            </div>
+
+            <div>
+                <label for="packageName" class="block text-sm font-medium text-gray-700 mb-1">Nome do Pacote (Package Name) <span class="text-red-500">*</span></label>
+                <input type="text" id="packageName" placeholder="com.example.mdm_client_base"
+                       class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" required>
+            </div>
+
+            <div>
+                <label for="componentName" class="block text-sm font-medium text-gray-700 mb-1">Nome do Componente Admin <span class="text-red-500">*</span></label>
+                <input type="text" id="componentName" placeholder="com.example.mdm_client_base/.DeviceAdminReceiver"
+                       class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" required>
+            </div>
+
+            <div>
+                <label for="wifiSsid" class="block text-sm font-medium text-gray-700 mb-1">SSID Wi-Fi (Opcional)</label>
+                <input type="text" id="wifiSsid" placeholder="Nome da sua rede Wi-Fi"
+                       class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+
+            <div>
+                <label for="wifiPassword" class="block text-sm font-medium text-gray-700 mb-1">Senha Wi-Fi (Opcional)</label>
+                <input type="password" id="wifiPassword" placeholder="Sua senha Wi-Fi"
+                       class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+
+            <div class="flex items-center">
+                <input id="skipEncryption" type="checkbox" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                <label for="skipEncryption" class="ml-2 block text-sm text-gray-900">Pular Criptografia (Não recomendado para produção)</label>
+            </div>
+
+            <div class="flex items-center">
+                <input id="leaveSystemApps" type="checkbox" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" checked>
+                <label for="leaveSystemApps" class="ml-2 block text-sm text-gray-900">Manter todos os apps do sistema habilitados</label>
+            </div>
+        </div>
+
+        <button onclick="generateQrCode()"
+                class="w-full sm:w-auto px-6 py-3 btn-primary text-white font-semibold rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-200 ease-in-out">
+            Gerar QR Code
+        </button>
+
+        <div id="qrCodeContainer" class="mt-8 hidden flex flex-col items-center">
+            <h2 class="text-2xl font-semibold text-indigo-700 mb-4">QR Code Gerado:</h2>
+            <img id="qrCodeImage" class="w-64 h-64 border border-gray-300 rounded-lg shadow-md p-2 bg-white" alt="QR Code de Provisionamento">
+            <p class="text-sm text-gray-500 mt-2">Escaneie este QR Code com o dispositivo Android para provisionamento.</p>
+
+            <h2 class="text-2xl font-semibold text-indigo-700 mt-8 mb-4">Payload JSON:</h2>
+            <div class="relative w-full">
+                <textarea id="jsonPayload" rows="10" readonly
+                          class="block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm bg-gray-50 text-gray-800 text-sm font-mono resize-y focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+                <button onclick="copyJsonPayload()"
+                        class="absolute top-2 right-2 px-4 py-2 btn-copy text-white text-sm font-medium rounded-md shadow-sm hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 transition duration-200 ease-in-out">
+                    Copiar JSON
+                </button>
+                <div id="copyMessage" class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1 bg-green-500 text-white text-xs rounded-md shadow-lg hidden">Copiado!</div>
+            </div>
+        </div>
+
+        <div class="mt-12 p-6 bg-blue-50 rounded-xl border border-blue-200 shadow-md">
+            <h2 class="text-2xl font-semibold text-blue-700 mb-4">Como usar o QR Code:</h2>
+            <ol class="list-decimal list-inside text-gray-700 space-y-3">
+                <li><strong class="font-medium">Redefina o dispositivo:</strong> Certifique-se de que o dispositivo Android esteja em suas configurações de fábrica.</li>
+                <li><strong class="font-medium">Inicie o assistente de configuração:</strong> Ligue o dispositivo e siga as instruções iniciais.</li>
+                <li><strong class="font-medium">Toque 6 vezes:</strong> Na tela de boas-vindas (geralmente a tela "Olá" ou "Bem-vindo"), toque 6 vezes rapidamente no mesmo local. Isso ativará o modo de escaneamento de QR Code.</li>
+                <li><strong class="font-medium">Escaneie o QR Code:</strong> Use a câmera do dispositivo para escanear o QR Code gerado acima.</li>
+                <li><strong class="font-medium">Aguarde o provisionamento:</strong> O dispositivo baixará seu APK, o instalará e o configurará como Proprietário do Dispositivo.</li>
+            </ol>
+            <p class="mt-4 text-sm text-blue-600">
+                <strong class="font-medium">Importante:</strong> O APK deve estar hospedado em um servidor acessível publicamente (via HTTP ou HTTPS) e o Checksum SHA-256 deve ser exato.
+            </p>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
+    <script>
+        function generateQrCode() {
+            const apkUrl = document.getElementById('apkUrl').value.trim();
+            const apkChecksum = document.getElementById('apkChecksum').value.trim();
+            const packageName = document.getElementById('packageName').value.trim();
+            const componentName = document.getElementById('componentName').value.trim();
+            const wifiSsid = document.getElementById('wifiSsid').value.trim();
+            const wifiPassword = document.getElementById('wifiPassword').value.trim();
+            const skipEncryption = document.getElementById('skipEncryption').checked;
+            const leaveSystemApps = document.getElementById('leaveSystemApps').checked;
+
+            // Basic validation
+            if (!apkUrl || !apkChecksum || !packageName || !componentName) {
+                alert('Por favor, preencha todos os campos obrigatórios (marcados com *)');
+                return;
+            }
+
+            // Construct the JSON payload
+            const payload = {
+                "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": apkUrl,
+                "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": apkChecksum,
+                "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_NAME": packageName,
+                "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": componentName,
+                "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": leaveSystemApps
+            };
+
+            if (skipEncryption) {
+                payload["android.app.extra.PROVISIONING_SKIP_ENCRYPTION"] = true;
+            }
+
+            if (wifiSsid) {
+                payload["android.app.extra.PROVISIONING_WIFI_SSID"] = wifiSsid;
+                if (wifiPassword) {
+                    payload["android.app.extra.PROVISIONING_WIFI_PASSWORD"] = wifiPassword;
+                }
+            }
+
+            const jsonString = JSON.stringify(payload, null, 2); // Pretty print JSON
+
+            // Generate QR Code
+            const qrCodeImage = document.getElementById('qrCodeImage');
+            new QRious({
+                element: qrCodeImage,
+                value: jsonString,
+                size: 256,
+                padding: 10
+            });
+
+            // Display JSON payload
+            document.getElementById('jsonPayload').value = jsonString;
+
+            // Show the QR code and JSON container
+            document.getElementById('qrCodeContainer').classList.remove('hidden');
+        }
+
+        function copyJsonPayload() {
+            const jsonPayload = document.getElementById('jsonPayload');
+            jsonPayload.select();
+            document.execCommand('copy'); // Use execCommand for broader compatibility in iframes
+
+            const copyMessage = document.getElementById('copyMessage');
+            copyMessage.classList.remove('hidden');
+            setTimeout(() => {
+                copyMessage.classList.add('hidden');
+            }, 2000); // Hide after 2 seconds
+        }
+    </script>
+</body>
+</html>

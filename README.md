@@ -31,7 +31,11 @@ Para começar com o desenvolvimento Flutter, consulte os recursos oficiais:
 ### **Instalação e Configuração**
 
 1. **Clone o Repositório:**  
+<<<<<<< HEAD
    git clone https://github.com/your\_username/mdm\_client\_base.git  
+=======
+   git clone <https://github.com/your\_username/mdm\_client\_base.git>  
+>>>>>>> retorno
    cd mdm\_client\_base
 
 2. **Obtenha as Dependências:**  
@@ -114,4 +118,10 @@ O projeto conta com os seguintes pacotes-chave do Flutter e Dart:
 
 ## **🤝 Contribuições**
 
+<<<<<<< HEAD
 Contribuições são muito bem-vindas\! Se tiver sugestões, encontrar um bug ou quiser adicionar uma nova funcionalidade, sinta-se à vontade para abrir uma issue ou enviar um pull request.
+=======
+Contribuições são muito bem-vindas\! Se tiver sugestões, encontrar um bug ou quiser adicionar uma nova funcionalidade, sinta-se à vontade para abrir uma issue ou enviar um pull request.
+
+## Criador : Alexandre de Souza Calmon Junior
+>>>>>>> retorno
