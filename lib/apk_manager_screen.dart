@@ -8,376 +8,352 @@ import 'package:logging/logging.dart';
 import 'package:mdm_client_base/main.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 
-import 'notification_service.dart' show NotificationService;
+// Enum para um controlo de estado mais claro
+enum InstallStatus { none, downloading, installing }
 
 class ApkManagerScreen extends StatefulWidget {
   const ApkManagerScreen({super.key});
 
   @override
-  // ignore: library_private_types_in_public_api
-  _ApkManagerScreenState createState() => _ApkManagerScreenState();
+  State<ApkManagerScreen> createState() => _ApkManagerScreenState();
 }
 
-class _ApkManagerScreenState extends State<ApkManagerScreen> {
+class _ApkManagerScreenState extends State<ApkManagerScreen> with WidgetsBindingObserver {
   final Logger _logger = Logger('ApkManagerScreen');
-  // ignore: unused_field
-  final DeviceService _deviceService = DeviceService();
   static const platform = MethodChannel('com.example.mdm_client_base/device_policy');
-  String _serverUrl = 'http://192.168.0.6:3000/public';
+
   List<Map<String, dynamic>> _apks = [];
-  // ignore: prefer_final_fields
-  Map<String, bool> _isInstalling = {};
+  final Map<String, (InstallStatus, double)> _installStates = {};
   bool _isLoading = true;
+  String? _errorMessage;
+  bool _hasInstallPermission = false;
 
   @override
   void initState() {
     super.initState();
-    _initializeServerUrl();
-    _fetchApks();
+    WidgetsBinding.instance.addObserver(this);
+    _initialize();
+  }
+  
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
-  Future<void> _initializeServerUrl() async {
-    final prefs = await SharedPreferences.getInstance();
-    final serverHost = prefs.getString('server_host') ?? '192.168.0.8';
-    final serverPort = prefs.getString('server_port') ?? '3000';
-    _serverUrl = 'http://$serverHost:$serverPort/public';
-    // Adjust for emulator
-    if (Platform.isAndroid) {
-      _serverUrl;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      _checkPermissionStatus();
     }
-    _logger.info('Server URL configurado: $_serverUrl');
+  }
+
+  Future<void> _initialize() async {
+    await _checkPermissionStatus();
+    await _fetchApks();
+  }
+
+  Future<void> _checkPermissionStatus() async {
+    final status = await Permission.requestInstallPackages.status;
+    if (mounted) {
+      setState(() {
+        _hasInstallPermission = status.isGranted;
+      });
+    }
   }
 
   Future<void> _fetchApks() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final serverUrl = Provider.of<DeviceService>(context, listen: false).serverUrl;
+
     try {
-      final response = await http.get(Uri.parse('$_serverUrl/apks.json'));
+      final response = await http.get(Uri.parse('$serverUrl/public/apks.json')).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final List<dynamic> jsonData = jsonDecode(response.body);
         if (!mounted) return;
         setState(() {
           _apks = jsonData.map((item) => {
                 'name': item['name'],
-                'url': '$_serverUrl/${item['name']}',
-                'size': item['size']?.toString() ?? 'N/A',
+                'url': '$serverUrl/public/${item['name']}',
+                'size': _formatBytes(item['size'] ?? 0),
+                'version': item['version'] ?? 'N/A',
               }).toList();
-          _isLoading = false;
-          _logger.info('APKs carregados: ${_apks.length}');
         });
       } else {
-        _logger.severe('Falha ao carregar APKs: ${response.statusCode}');
-        if (!mounted) return;
-        setState(() => _isLoading = false);
-        NotificationService.instance.showNotification(
-          'Erro',
-          'Falha ao carregar APKs: ${response.statusCode}',
-        );
+        throw HttpException('Falha ao carregar APKs: ${response.statusCode}');
       }
     } catch (e) {
       _logger.severe('Erro ao buscar APKs: $e');
       if (!mounted) return;
-      setState(() => _isLoading = false);
-      NotificationService.instance.showNotification(
-        'Erro',
-        'Falha ao carregar APKs: $e',
-      );
+      setState(() {
+        _errorMessage = 'Não foi possível carregar a lista de APKs.\nVerifique a conexão com o servidor.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
-  // Método melhorado para verificar e solicitar permissões
-  Future<bool> _checkAndRequestPermissions() async {
+  String _formatBytes(int bytes, [int decimals = 2]) {
+    if (bytes <= 0) return "0 B";
+    const suffixes = ["B", "KB", "MB", "GB", "TB"];
+    var i = (bytes.toString().length - 1) ~/ 3;
+    return '${(bytes / (1 << (i * 10))).toStringAsFixed(decimals)} ${suffixes[i]}';
+  }
+
+  Future<void> _handleInstallClick(String apkName, String apkUrl) async {
+    await _checkPermissionStatus();
+    if (_hasInstallPermission) {
+      _showInstallConfirmation(apkName, apkUrl);
+    } else {
+      _showPermissionExplanationDialog();
+    }
+  }
+
+  Future<void> _downloadAndInstallApk(String apkName, String apkUrl) async {
     try {
-      final androidVersion = await _getAndroidSdkVersion();
-      _logger.info('Versão do Android SDK: $androidVersion');
+      final client = http.Client();
+      final request = http.Request('GET', Uri.parse(apkUrl));
+      final response = await client.send(request);
 
-      if (androidVersion >= 30) {
-        // Android 11+ (API 30+) - Usar MANAGE_EXTERNAL_STORAGE
-        final manageStorageStatus = await Permission.manageExternalStorage.status;
-        _logger.info('Status MANAGE_EXTERNAL_STORAGE: $manageStorageStatus');
-        
-        if (manageStorageStatus.isDenied || manageStorageStatus.isPermanentlyDenied) {
-          final requestResult = await Permission.manageExternalStorage.request();
-          _logger.info('Resultado da solicitação MANAGE_EXTERNAL_STORAGE: $requestResult');
-          
-          if (requestResult.isDenied || requestResult.isPermanentlyDenied) {
-            _showPermissionDialog('MANAGE_EXTERNAL_STORAGE');
-            return false;
-          }
-        }
-      } else {
-        // Android 10 e abaixo - Usar WRITE_EXTERNAL_STORAGE
-        final storageStatus = await Permission.storage.status;
-        _logger.info('Status STORAGE: $storageStatus');
-        
-        if (storageStatus.isDenied || storageStatus.isPermanentlyDenied) {
-          final requestResult = await Permission.storage.request();
-          _logger.info('Resultado da solicitação STORAGE: $requestResult');
-          
-          if (requestResult.isDenied || requestResult.isPermanentlyDenied) {
-            _showPermissionDialog('WRITE_EXTERNAL_STORAGE');
-            return false;
-          }
-        }
-      }
+      if (response.statusCode != 200) throw Exception('Falha no download: ${response.statusCode}');
 
-      // Verificar também permissão de instalação de aplicativos
-      if (androidVersion >= 26) {
-        final installStatus = await Permission.requestInstallPackages.status;
-        _logger.info('Status REQUEST_INSTALL_PACKAGES: $installStatus');
-        
-        if (installStatus.isDenied || installStatus.isPermanentlyDenied) {
-          final requestResult = await Permission.requestInstallPackages.request();
-          _logger.info('Resultado da solicitação REQUEST_INSTALL_PACKAGES: $requestResult');
-          
-          if (requestResult.isDenied || requestResult.isPermanentlyDenied) {
-            _showPermissionDialog('REQUEST_INSTALL_PACKAGES');
-            return false;
-          }
-        }
-      }
+      final contentLength = response.contentLength;
+      List<int> bytes = [];
+      int received = 0;
 
-      _logger.info('Todas as permissões concedidas');
-      return true;
+      response.stream.listen(
+        (List<int> newBytes) {
+          bytes.addAll(newBytes);
+          received += newBytes.length;
+          if (contentLength != null && mounted) {
+            setState(() => _installStates[apkName] = (InstallStatus.downloading, received / contentLength));
+          }
+        },
+        onDone: () async {
+          if (mounted) setState(() => _installStates[apkName] = (InstallStatus.installing, 1.0));
+          
+          // **INÍCIO DA CORREÇÃO: Guarda o ficheiro no diretório temporário da aplicação**
+          final tempDir = await getTemporaryDirectory();
+          final apkFile = File('${tempDir.path}/$apkName');
+          await apkFile.writeAsBytes(bytes);
+          _logger.info('APK salvo em: ${apkFile.path}');
+          // **FIM DA CORREÇÃO**
+
+          // A lógica de "Device Owner vs Normal" está no lado nativo (MainActivity.kt)
+          final result = await platform.invokeMethod('installSystemApp', {'apkPath': apkFile.path});
+          _logger.info('Instalação concluída: $result');
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Instalação de $apkName: $result'), backgroundColor: Colors.green));
+          }
+        },
+        onError: (e) => throw e,
+        cancelOnError: true,
+      );
     } catch (e) {
-      _logger.severe('Erro ao verificar permissões: $e');
-      return false;
+      _logger.severe('Erro ao instalar APK $apkName: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Falha ao instalar $apkName: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) {
+        final currentState = _installStates[apkName];
+        if (currentState?.$1 != InstallStatus.downloading) {
+            setState(() => _installStates[apkName] = (InstallStatus.none, 0.0));
+        }
+      }
     }
   }
 
-  void _showPermissionDialog(String permission) {
+  Future<void> _showInstallConfirmation(String apkName, String apkUrl) async {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Permissão Necessária'),
-        content: Text(
-          'A permissão $permission é necessária para instalar aplicativos.\n\n'
-          'Por favor, ative a permissão nas configurações do sistema.',
-        ),
+        title: const Text('Confirmar Instalação'),
+        content: Text('Tem a certeza de que deseja instalar o aplicativo "$apkName"?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              openAppSettings();
+              _downloadAndInstallApk(apkName, apkUrl);
             },
-            child: const Text('Configurações'),
+            child: const Text('Instalar'),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _downloadAndInstallApk(String apkName, String apkUrl) async {
-  try {
-    if (!mounted) return;
-    setState(() => _isInstalling[apkName] = true);
-
-    // Verificar permissões primeiro
-    final hasPermissions = await _checkAndRequestPermissions();
-    if (!hasPermissions) {
-      throw Exception('Permissões necessárias não foram concedidas');
-    }
-
-    // Download APK
-    _logger.info('Baixando APK: $apkUrl');
-    final response = await http.get(Uri.parse(apkUrl));
-    if (response.statusCode != 200) {
-      throw Exception('Falha ao baixar APK: ${response.statusCode}');
-    }
-
-    // Determinar diretório de download baseado na versão do Android
-    String apkPath;
-    final androidVersion = await _getAndroidSdkVersion();
-    
-    if (androidVersion >= 30) {
-      // Android 11+ - usar pasta Downloads pública
-      final downloadsDir = Directory('/storage/emulated/0/Download');
-      if (!await downloadsDir.exists()) {
-        await downloadsDir.create(recursive: true);
-      }
-      apkPath = '${downloadsDir.path}/$apkName';
-      _logger.info('Android 11+: Salvando em Downloads públicas: $apkPath');
-    } else {
-      // Android 10 e abaixo - usar armazenamento externo/Downloads
-      final externalDir = await getExternalStorageDirectory();
-      if (externalDir == null) {
-        throw Exception('Não foi possível acessar o armazenamento externo');
-      }
-      // Tentar usar a pasta Downloads padrão
-      final downloadsDir = Directory('/storage/emulated/0/Download');
-      if (await downloadsDir.exists()) {
-        apkPath = '${downloadsDir.path}/$apkName';
-        _logger.info('Android <=10: Usando Downloads públicas: $apkPath');
-      } else {
-        // Fallback para diretório externo da aplicação
-        apkPath = '${externalDir.path}/$apkName';
-        _logger.info('Android <=10: Fallback para diretório externo: $apkPath');
-      }
-    }
-
-    final apkFile = File(apkPath);
-    
-    // Criar diretório pai se não existir
-    await apkFile.parent.create(recursive: true);
-    await apkFile.writeAsBytes(response.bodyBytes);
-    _logger.info('APK salvo em: $apkPath (${response.bodyBytes.length} bytes)');
-
-    // Verificar se o arquivo foi salvo corretamente
-    if (!await apkFile.exists()) {
-      throw Exception('Falha ao salvar o arquivo APK em $apkPath');
-    }
-    
-    final fileSize = await apkFile.length();
-    // ignore: unnecessary_brace_in_string_interps
-    _logger.info('Arquivo APK confirmado: $apkPath (${fileSize} bytes)');
-
-    // Instalar APK
-    _logger.info('Iniciando instalação de $apkName do caminho: $apkPath');
-    final result = await platform.invokeMethod('installSystemApp', {'apkPath': apkPath});
-    _logger.info('Instalação concluída: $result');
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Instalação de $apkName: $result'),
-        backgroundColor: Colors.green,
+  Future<void> _showPermissionExplanationDialog() async {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Permissão Necessária'),
+        content: const Text('Para instalar aplicações a partir deste gerenciador, é necessário conceder permissão para instalar aplicações de fontes desconhecidas nas configurações do Android.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings(); // Abre as configurações da aplicação
+            },
+            child: const Text('Ir para Configurações'),
+          ),
+        ],
       ),
     );
-    NotificationService.instance.showNotification(
-      'Sucesso',
-      'Instalação de $apkName concluída',
-    );
-  } catch (e) {
-    _logger.severe('Erro ao instalar APK $apkName: $e');
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Falha ao instalar $apkName: $e'),
-        backgroundColor: Colors.red,
-        action: SnackBarAction(
-          label: 'Configurações',
-          onPressed: () => openAppSettings(),
-        ),
-      ),
-    );
-    NotificationService.instance.showNotification(
-      'Erro',
-      'Falha ao instalar $apkName: $e',
-    );
-  } finally {
-    if (!mounted) return;
-    setState(() => _isInstalling[apkName] = false);
-  }
-}
-
-  // Helper to get Android SDK version
-  Future<int> _getAndroidSdkVersion() async {
-    try {
-      final result = await platform.invokeMethod('getSdkVersion');
-      return result as int;
-    } catch (e) {
-      _logger.severe('Erro ao obter versão do SDK: $e');
-      return 30; // Assumir Android 11+ em caso de erro
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Gerenciador de APKs'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              setState(() => _isLoading = true);
-              _fetchApks();
-            },
-          ),
-        ],
+        title: const Text('Gerenciador de Aplicações'),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _apks.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.android, size: 64, color: Colors.grey),
-                      SizedBox(height: 16),
-                      Text('Nenhum APK disponível'),
-                      SizedBox(height: 8),
-                      Text(
-                        'Verifique a conexão com o servidor',
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  itemCount: _apks.length,
-                  itemBuilder: (context, index) {
-                    final apk = _apks[index];
-                    final isInstalling = _isInstalling[apk['name']] ?? false;
-                    return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: ListTile(
-                        leading: const Icon(Icons.android, color: Colors.green),
-                        title: Text(
-                          apk['name'],
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text('Tamanho: ${apk['size']}'),
-                        trailing: isInstalling
-                            ? const SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : ElevatedButton.icon(
-                                onPressed: () =>
-                                    _downloadAndInstallApk(apk['name'], apk['url']),
-                                icon: const Icon(Icons.download),
-                                label: const Text('Instalar'),
-                              ),
-                        onTap: () {
-                          showDialog(
-                            context: context,
-                            builder: (context) => AlertDialog(
-                              title: Text(apk['name']),
-                              content: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('Tamanho: ${apk['size']}'),
-                                  const SizedBox(height: 8),
-                                  Text('URL: ${apk['url']}'),
-                                ],
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(context),
-                                  child: const Text('Fechar'),
-                                ),
-                                ElevatedButton(
-                                  onPressed: () {
-                                    Navigator.pop(context);
-                                    _downloadAndInstallApk(apk['name'], apk['url']);
-                                  },
-                                  child: const Text('Instalar'),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  },
-                ),
+          : RefreshIndicator(
+              onRefresh: _fetchApks,
+              child: Column(
+                children: [
+                  _buildPermissionCard(),
+                  Expanded(child: _buildBody()),
+                ],
+              ),
+            ),
     );
+  }
+
+  Widget _buildPermissionCard() {
+    return Card(
+      margin: const EdgeInsets.all(8.0),
+      color: _hasInstallPermission ? Colors.green.shade50 : Colors.orange.shade50,
+      child: ListTile(
+        leading: Icon(
+          _hasInstallPermission ? Icons.check_circle_outline_rounded : Icons.warning_amber_rounded,
+          color: _hasInstallPermission ? Colors.green : Colors.orange,
+          size: 32,
+        ),
+        title: Text(
+          'Permissão para Instalar Aplicações',
+          style: TextStyle(fontWeight: FontWeight.bold, color: _hasInstallPermission ? Colors.green.shade800 : Colors.orange.shade800),
+        ),
+        subtitle: Text(_hasInstallPermission ? 'Ativa' : 'Inativa. É necessária para instalar APKs.'),
+        trailing: !_hasInstallPermission
+            ? ElevatedButton(onPressed: openAppSettings, child: const Text('Ativar'))
+            : null,
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_errorMessage != null) return _buildErrorWidget();
+    if (_apks.isEmpty) return const Center(child: Text('Nenhum APK disponível no servidor.'));
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(8.0),
+      itemCount: _apks.length,
+      itemBuilder: (context, index) {
+        final apk = _apks[index];
+        return _buildApkCard(apk);
+      },
+    );
+  }
+
+  Widget _buildErrorWidget() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.wifi_off_rounded, color: Colors.grey[400], size: 80),
+            const SizedBox(height: 24),
+            const Text('Ocorreu um Erro', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(_errorMessage!, textAlign: TextAlign.center, style: TextStyle(fontSize: 16, color: Colors.grey[600])),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: _fetchApks,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Tentar Novamente'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildApkCard(Map<String, dynamic> apk) {
+    final apkName = apk['name'] as String;
+    final state = _installStates[apkName] ?? (InstallStatus.none, 0.0);
+    final status = state.$1;
+    final progress = state.$2;
+
+    return Card(
+      elevation: 2,
+      margin: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          children: [
+            const Icon(Icons.android_rounded, color: Colors.green, size: 48),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(apkName.replaceAll('.apk', ''), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 4),
+                  Text('Versão: ${apk['version']} • Tamanho: ${apk['size']}', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 16),
+            _buildInstallButton(status, progress, apk),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInstallButton(InstallStatus status, double progress, Map<String, dynamic> apk) {
+    switch (status) {
+      case InstallStatus.none:
+        return ElevatedButton(
+          onPressed: () => _handleInstallClick(apk['name'], apk['url']),
+          child: const Text('Instalar'),
+        );
+      case InstallStatus.downloading:
+        return SizedBox(
+          width: 40,
+          height: 40,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              CircularProgressIndicator(value: progress),
+              Text('${(progress * 100).toInt()}%', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        );
+      case InstallStatus.installing:
+        return const SizedBox(
+          width: 40,
+          height: 40,
+          child: CircularProgressIndicator(),
+        );
+    }
   }
 }

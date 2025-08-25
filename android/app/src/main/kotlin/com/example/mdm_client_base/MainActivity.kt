@@ -1,5 +1,6 @@
 package com.example.mdm_client_base
 
+import android.Manifest
 import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
@@ -8,13 +9,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
-import android.os.UserManager
 import android.provider.Settings
 import android.util.Log
+import androidx.core.app.ActivityCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -22,12 +24,19 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
+import android.os.UserManager
+import android.content.pm.ApplicationInfo
+
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.mdm_client_base/device_policy"
     private lateinit var devicePolicyManager: DevicePolicyManager
     private lateinit var adminComponent: ComponentName
     private val TAG = "MDM_MainActivity"
+    private val REQUEST_LOCATION_PERMISSION = 1002
+    private val REQUEST_NOTIFICATION_PERMISSION = 1003
+    private var locationPermissionResult: MethodChannel.Result? = null
+    private var notificationPermissionResult: MethodChannel.Result? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,7 +46,6 @@ class MainActivity : FlutterActivity() {
         devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
 
-        // Handle provisioning
         handleProvisioningIntent(intent)
     }
 
@@ -91,30 +99,58 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            REQUEST_LOCATION_PERMISSION -> {
+                val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                Log.d(TAG, "Resultado da permissão de localização: $granted")
+                locationPermissionResult?.success(granted)
+                locationPermissionResult = null
+            }
+            REQUEST_NOTIFICATION_PERMISSION -> {
+                val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                Log.d(TAG, "Resultado da permissão de notificação: $granted")
+                notificationPermissionResult?.success(granted)
+                notificationPermissionResult = null
+            }
+        }
+    }
+
     private fun applyInitialPolicies() {
         try {
             if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
                 Log.d(TAG, "Applying initial policies as Device Owner")
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_WIFI)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_INSTALL_APPS)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_UNINSTALL_APPS)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_MODIFY_ACCOUNTS)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_FACTORY_RESET)
-                devicePolicyManager.addUserRestriction(adminComponent, UserManager.DISALLOW_CONFIG_LOCATION)
-                // Forçar localização ativada
+                val restrictions = listOf(
+                    UserManager.DISALLOW_CONFIG_WIFI,
+                    UserManager.DISALLOW_INSTALL_APPS,
+                    UserManager.DISALLOW_UNINSTALL_APPS,
+                    UserManager.DISALLOW_MODIFY_ACCOUNTS,
+                    UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS,
+                    UserManager.DISALLOW_FACTORY_RESET,
+                    UserManager.DISALLOW_CONFIG_LOCATION
+                )
+                restrictions.forEach { restriction ->
+                    devicePolicyManager.addUserRestriction(adminComponent, restriction)
+                    Log.d(TAG, "Applied restriction: $restriction")
+                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     devicePolicyManager.setLocationEnabled(adminComponent, true)
-                    Log.d(TAG, "Localização forçada a permanecer ativada")
+                    Log.d(TAG, "Location forced enabled")
                 }
-                // Desativar Quick Settings
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     devicePolicyManager.setStatusBarDisabled(adminComponent, true)
-                    Log.d(TAG, "Painel de configurações rápidas desativado")
+                    Log.d(TAG, "Quick Settings panel disabled")
                 }
                 devicePolicyManager.setPasswordQuality(adminComponent, DevicePolicyManager.PASSWORD_QUALITY_ALPHANUMERIC)
                 devicePolicyManager.setPasswordMinimumLength(adminComponent, 8)
                 devicePolicyManager.setLockTaskPackages(adminComponent, arrayOf(packageName))
+                devicePolicyManager.setApplicationHidden(adminComponent, "com.android.settings", true)
+                devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf("com.android.settings"), true)
                 Log.d(TAG, "Initial policies applied successfully")
             } else {
                 Log.w(TAG, "Not Device Owner, policies not applied")
@@ -138,6 +174,12 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun isAccessibilityServiceEnabled(context: Context, service: Class<*>): Boolean {
+        val expectedComponentName = ComponentName(context, service)
+        val enabledServicesSetting = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        return enabledServicesSetting?.contains(expectedComponentName.flattenToString()) ?: false
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         Log.d(TAG, "Configuring MethodChannel: $CHANNEL")
@@ -145,6 +187,86 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             Log.d(TAG, "Method called: ${call.method}")
             when (call.method) {
+                "isAccessibilityServiceEnabled" -> {
+                    val isEnabled = isAccessibilityServiceEnabled(this, AppBlockerService::class.java)
+                    result.success(isEnabled)
+                }
+                "openAccessibilitySettings" -> {
+                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    startActivity(intent)
+                    result.success(null)
+                }
+                "updateBlockList" -> {
+                val appsToBlock = call.argument<List<String>>("packages")
+                if (appsToBlock != null) {
+                    try {
+                        // Atualizar a lista de bloqueio no AppBlockerService
+                        Log.d(TAG, "Atualizando lista de bloqueio no AppBlockerService: $appsToBlock")
+                        AppBlockerService.blockList.clear()
+                        AppBlockerService.blockList.addAll(appsToBlock)
+                        Log.d(TAG, "Lista de bloqueio de acessibilidade atualizada: ${AppBlockerService.blockList}")
+
+                        // Bloqueio via DevicePolicyManager para aplicativos do sistema, se for Device Owner
+                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
+                            Log.d(TAG, "Aplicando bloqueio via DevicePolicyManager para aplicativos do sistema")
+                            appsToBlock.forEach { packageName ->
+                                try {
+                                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                                    val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                                    if (isSystemApp) {
+                                        devicePolicyManager.setApplicationHidden(adminComponent, packageName, true)
+                                        devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf(packageName), true)
+                                        Log.d(TAG, "Aplicativo do sistema bloqueado via DevicePolicyManager: $packageName")
+                                    } else {
+                                        Log.d(TAG, "Aplicativo não-sistema $packageName será bloqueado via serviço de acessibilidade")
+                                    }
+                                } catch (e: PackageManager.NameNotFoundException) {
+                                    Log.e(TAG, "Pacote $packageName não encontrado: ${e.message}")
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Erro ao bloquear $packageName via DevicePolicyManager: ${e.message}")
+                                }
+                            }
+                            // Desbloquear aplicativos que não estão na lista
+                            val previouslyBlockedApps = AppBlockerService.blockList - appsToBlock.toSet()
+                            Log.d(TAG, "Desbloqueando aplicativos via DevicePolicyManager: $previouslyBlockedApps")
+                            previouslyBlockedApps.forEach { packageName ->
+                                try {
+                                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                                    val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                                    if (isSystemApp) {
+                                        devicePolicyManager.setApplicationHidden(adminComponent, packageName, false)
+                                        devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf(packageName), false)
+                                        Log.d(TAG, "Aplicativo do sistema desbloqueado via DevicePolicyManager: $packageName")
+                                    }
+                                } catch (e: PackageManager.NameNotFoundException) {
+                                    Log.e(TAG, "Pacote $packageName não encontrado: ${e.message}")
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Erro ao desbloquear $packageName via DevicePolicyManager: ${e.message}")
+                                }
+                            }
+                        } else if (appsToBlock.contains("com.android.settings")) {
+                            Log.w(TAG, "Não é possível bloquear com.android.settings sem Device Owner")
+                            result.error(
+                                "NOT_DEVICE_OWNER_SYSTEM_APP",
+                                "O aplicativo precisa ser Device Owner para bloquear aplicativos do sistema como com.android.settings",
+                                null
+                            )
+                            return@setMethodCallHandler
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Erro ao atualizar lista de bloqueio: ${e.message}")
+                        result.error("BLOCK_LIST_ERROR", "Erro ao atualizar lista de bloqueio: ${e.message}", null)
+                    }
+                } else {
+                    Log.e(TAG, "Lista de pacotes é nula")
+                    result.error("INVALID_ARGUMENT", "Lista de pacotes é nula", null)
+                }
+            }
+                "isDeviceAdmin" -> {
+                    val isAdminActive = devicePolicyManager.isAdminActive(adminComponent)
+                    result.success(isAdminActive)
+                }
                 "getSdkVersion" -> {
                     try {
                         val sdkVersion = Build.VERSION.SDK_INT
@@ -184,24 +306,18 @@ class MainActivity : FlutterActivity() {
                             result.error("INVALID_PATH", "APK path is null", null)
                             return@setMethodCallHandler
                         }
-
                         val apkFile = File(apkPath)
-                        Log.d(TAG, "Checking file: ${apkFile.absolutePath}")
-                        Log.d(TAG, "File exists: ${apkFile.exists()}, Readable: ${apkFile.canRead()}, Size: ${if (apkFile.exists()) apkFile.length() else "N/A"}")
-
+                        Log.d(TAG, "Checking file: ${apkFile.absolutePath}, Exists: ${apkFile.exists()}, Readable: ${apkFile.canRead()}, Size: ${apkFile.length()}")
                         if (!apkFile.exists() || !apkFile.canRead()) {
                             Log.w(TAG, "APK file not found or not readable: $apkPath")
-                            result.error("FILE_NOT_FOUND", "APK file not found or not readable: $apkPath", null)
+                            result.error("FILE_NOT_FOUND", "APK file not found or not readable", null)
                             return@setMethodCallHandler
                         }
-
-                        // Validate APK file integrity
                         if (!validateApkFile(apkFile)) {
                             Log.w(TAG, "Invalid APK file: $apkPath")
                             result.error("INVALID_APK", "APK file is corrupted or invalid", null)
                             return@setMethodCallHandler
                         }
-
                         if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
                             Log.d(TAG, "Attempting silent installation as Device Owner")
                             installSilently(apkFile, result)
@@ -210,32 +326,38 @@ class MainActivity : FlutterActivity() {
                             installNormally(apkFile, result)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "General error installing APK: ${e.message}", e)
+                        Log.e(TAG, "Error installing APK: ${e.message}")
                         result.error("INSTALL_ERROR", "Error installing APK: ${e.message}", null)
                     }
                 }
-                "restrictSettings" -> {
+                 "restrictSettings" -> {
                     try {
                         if (!devicePolicyManager.isDeviceOwnerApp(packageName)) {
-                            Log.w(TAG, "Não é Device Owner")
-                            result.error("ADMIN_ERROR", "Aplicativo não é Device Owner", null)
+                            Log.w(TAG, "Not Device Owner")
+                            result.error("ADMIN_ERROR", "Application is not Device Owner", null)
                             return@setMethodCallHandler
                         }
-
-                        // Expect a map of restrictions with boolean values
-                        val restrictions = call.argument<Map<String, Boolean>>("restrictions")
+                        // Garantir que restrictions seja um Map<String, Boolean>
+                        val restrictions = call.argument<Map<String, Boolean>>("restrictions") ?: call.argument<Boolean>("restrict")?.let { restrict ->
+                            mapOf(
+                                "DISALLOW_CONFIG_WIFI" to restrict,
+                                "DISALLOW_INSTALL_APPS" to restrict,
+                                "DISALLOW_UNINSTALL_APPS" to restrict,
+                                "DISALLOW_MODIFY_ACCOUNTS" to restrict,
+                                "DISALLOW_CONFIG_MOBILE_NETWORKS" to restrict,
+                                "DISALLOW_FACTORY_RESET" to restrict,
+                                "DISALLOW_CONFIG_LOCATION" to restrict
+                            )
+                        }
                         if (restrictions == null) {
-                            Log.w(TAG, "Mapa de restrições é nulo")
-                            result.error("INVALID_INPUT", "Mapa de restrições é nulo", null)
+                            Log.w(TAG, "Restrictions map is null")
+                            result.error("INVALID_INPUT", "Restrictions map is null", null)
                             return@setMethodCallHandler
                         }
-
                         val appliedRestrictions = mutableListOf<String>()
                         val clearedRestrictions = mutableListOf<String>()
                         val errors = mutableListOf<String>()
                         val currentStatus = mutableMapOf<String, Boolean>()
-
-                        // Define supported restrictions
                         val restrictionMap = mapOf(
                             "DISALLOW_CONFIG_WIFI" to UserManager.DISALLOW_CONFIG_WIFI,
                             "DISALLOW_INSTALL_APPS" to UserManager.DISALLOW_INSTALL_APPS,
@@ -245,126 +367,82 @@ class MainActivity : FlutterActivity() {
                             "DISALLOW_FACTORY_RESET" to UserManager.DISALLOW_FACTORY_RESET,
                             "DISALLOW_CONFIG_LOCATION" to UserManager.DISALLOW_CONFIG_LOCATION
                         )
-
-                        // Verificar status atual das restrições
                         restrictionMap.forEach { (key, restriction) ->
-    val userRestrictions = devicePolicyManager.getUserRestrictions(adminComponent)
-    val isRestricted = userRestrictions.getBoolean(restriction, false)
-    currentStatus[key] = isRestricted
-    Log.d(TAG, "Restrição $key: atualmente ${if (isRestricted) "ativa" else "inativa"}")
-}
-
-                        // Processar cada restrição solicitada
-                        restrictions.forEach { (key, enable) ->
+                            val userRestrictions = devicePolicyManager.getUserRestrictions(adminComponent)
+                            val isRestricted = userRestrictions.getBoolean(restriction, false)
+                            currentStatus[key] = isRestricted
+                            Log.d(TAG, "Restriction $key: currently ${if (isRestricted) "active" else "inactive"}")
+                        }
+                        // Iterar explicitamente sobre as entradas do mapa
+                        restrictions.entries.forEach { (key, enable) ->
                             val restriction = restrictionMap[key]
                             if (restriction == null) {
-                                Log.w(TAG, "Restrição não suportada: $key")
-                                errors.add("Restrição não suportada: $key")
+                                Log.w(TAG, "Unsupported restriction: $key")
+                                errors.add("Unsupported restriction: $key")
                                 return@forEach
                             }
                             try {
                                 if (enable) {
                                     devicePolicyManager.addUserRestriction(adminComponent, restriction)
                                     appliedRestrictions.add(key)
-                                    Log.d(TAG, "Restrição aplicada: $key")
-                                    // Forçar localização ativada para DISALLOW_CONFIG_LOCATION
+                                    Log.d(TAG, "Restriction applied: $key")
                                     if (key == "DISALLOW_CONFIG_LOCATION" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                                         devicePolicyManager.setLocationEnabled(adminComponent, true)
-                                        Log.d(TAG, "Localização forçada a permanecer ativada")
+                                        Log.d(TAG, "Location forced enabled")
                                     }
                                 } else {
                                     devicePolicyManager.clearUserRestriction(adminComponent, restriction)
                                     clearedRestrictions.add(key)
-                                    Log.d(TAG, "Restrição removida: $key")
+                                    Log.d(TAG, "Restriction cleared: $key")
                                 }
                             } catch (e: Exception) {
-                                Log.e(TAG, "Erro ao processar restrição $key: ${e.message}")
-                                errors.add("Falha ao processar $key: ${e.message}")
+                                Log.e(TAG, "Error processing restriction $key: ${e.message}")
+                                errors.add("Failed to process $key: ${e.message}")
                             }
                         }
-
-                        // Tentar bloquear o aplicativo de configurações do sistema
                         try {
-                            if (restrictions.values.any { it }) { // Se alguma restrição está ativa
+                            if (restrictions.values.any { it }) {
                                 devicePolicyManager.setApplicationHidden(adminComponent, "com.android.settings", true)
-                                Log.d(TAG, "Aplicativo de configurações do sistema (com.android.settings) ocultado")
-                                // Fallback: suspender o pacote de configurações
                                 devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf("com.android.settings"), true)
-                                Log.d(TAG, "Aplicativo de configurações do sistema (com.android.settings) suspenso")
-                                // Desativar Quick Settings
+                                Log.d(TAG, "System settings app (com.android.settings) hidden and suspended")
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                                     devicePolicyManager.setStatusBarDisabled(adminComponent, true)
-                                    Log.d(TAG, "Painel de configurações rápidas desativado")
+                                    Log.d(TAG, "Quick Settings panel disabled")
                                 }
                             } else {
                                 devicePolicyManager.setApplicationHidden(adminComponent, "com.android.settings", false)
                                 devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf("com.android.settings"), false)
-                                Log.d(TAG, "Aplicativo de configurações do sistema (com.android.settings) restaurado")
+                                Log.d(TAG, "System settings app (com.android.settings) restored")
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                                     devicePolicyManager.setStatusBarDisabled(adminComponent, false)
-                                    Log.d(TAG, "Painel de configurações rápidas restaurado")
+                                    Log.d(TAG, "Quick Settings panel restored")
                                 }
                             }
                         } catch (e: Exception) {
-                            Log.e(TAG, "Erro ao bloquear configurações: ${e.message}")
-                            errors.add("Erro ao bloquear configurações: ${e.message}")
+                            Log.e(TAG, "Error managing settings app: ${e.message}")
+                            errors.add("Error managing settings app: ${e.message}")
                         }
-
-                        // Preparar resultado
                         val resultMap = mapOf(
                             "applied" to appliedRestrictions,
                             "cleared" to clearedRestrictions,
                             "errors" to errors,
                             "currentStatus" to currentStatus
                         )
-
                         if (errors.isEmpty()) {
-                            Log.d(TAG, "Restrições atualizadas com sucesso: $resultMap")
+                            Log.d(TAG, "Restrictions updated successfully: $resultMap")
                             result.success(resultMap)
                         } else {
-                            Log.e(TAG, "Algumas restrições falharam: $errors")
-                            result.error("RESTRICT_SETTINGS_PARTIAL_ERROR", "Algumas restrições falharam: $errors", resultMap)
+                            Log.e(TAG, "Some restrictions failed: $errors")
+                            result.error("RESTRICT_SETTINGS_PARTIAL_ERROR", "Some restrictions failed: $errors", resultMap)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao restringir configurações: ${e.message}")
-                        result.error("RESTRICT_SETTINGS_ERROR", "Erro ao restringir configurações: ${e.message}", null)
-                    }
-                }
-                "getWifiInfo" -> {
-                    try {
-                        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                        val wifiInfo = wifiManager.connectionInfo
-                        val ssid = wifiInfo.ssid?.replace("\"", "") ?: "N/A"
-                        val bssid = wifiInfo.bssid?.takeIf { it != "02:00:00:00:00:00" } ?: "N/A"
-                        val result_map = mapOf(
-                            "ssid" to ssid,
-                            "bssid" to bssid,
-                            "frequency" to wifiInfo.frequency,
-                            "rssi" to wifiInfo.rssi
-                        )
-                        Log.d(TAG, "Wi-Fi info obtained: $result_map")
-                        result.success(result_map)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error getting Wi-Fi info: ${e.message}")
-                        result.error("WIFI_INFO_ERROR", "Error getting Wi-Fi info: ${e.message}", null)
-                    }
-                }
-                "getMacAddress" -> {
-                    try {
-                        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                        val wifiInfo = wifiManager.connectionInfo
-                        val macAddress = wifiInfo.bssid?.takeIf { it != "02:00:00:00:00:00" } ?: "N/A"
-                        Log.d(TAG, "BSSID obtained: $macAddress")
-                        result.success(macAddress)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error getting BSSID: ${e.message}")
-                        result.error("MAC_ADDRESS_ERROR", "Error getting BSSID: ${e.message}", null)
+                        Log.e(TAG, "Error restricting settings: ${e.message}")
+                        result.error("RESTRICT_SETTINGS_ERROR", "Error restricting settings: ${e.message}", null)
                     }
                 }
                 "isDeviceOwnerOrProfileOwner" -> {
                     try {
-                        val isAdmin = devicePolicyManager.isDeviceOwnerApp(packageName) ||
-                                devicePolicyManager.isProfileOwnerApp(packageName)
+                        val isAdmin = devicePolicyManager.isDeviceOwnerApp(packageName) || devicePolicyManager.isProfileOwnerApp(packageName)
                         Log.d(TAG, "isDeviceOwnerOrProfileOwner: $isAdmin")
                         result.success(isAdmin)
                     } catch (e: Exception) {
@@ -444,14 +522,104 @@ class MainActivity : FlutterActivity() {
                         val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
                             putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
                             putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                                call.argument<String>("explanation") ?: "This app requires admin permissions to function properly.")
+                                call.argument<String>("explanation") ?: "Este aplicativo precisa de permissões de administrador para gerenciar o dispositivo.")
                         }
                         startActivity(intent)
-                        Log.d(TAG, "Admin request initiated")
+                        Log.d(TAG, "Solicitação de administrador do dispositivo iniciada")
                         result.success(true)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error requesting admin: ${e.message}")
+                        Log.e(TAG, "Erro ao solicitar permissão de administrador: ${e.message}")
                         result.error("REQUEST_ADMIN_ERROR", e.message, null)
+                    }
+                }
+                "hasLocationPermission" -> {
+                    try {
+                        val fineLocation = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                        val coarseLocation = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                        val granted = fineLocation && coarseLocation
+                        Log.d(TAG, "Permissão de localização verificada: $granted")
+                        result.success(granted)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Erro ao verificar permissão de localização: ${e.message}")
+                        result.error("LOCATION_PERMISSION_ERROR", e.message, null)
+                    }
+                }
+                "requestLocationPermission" -> {
+                    try {
+                        locationPermissionResult = result
+                        ActivityCompat.requestPermissions(
+                            this,
+                            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                            REQUEST_LOCATION_PERMISSION
+                        )
+                        Log.d(TAG, "Solicitação de permissão de localização iniciada")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Erro ao solicitar permissão de localização: ${e.message}")
+                        result.error("REQUEST_LOCATION_ERROR", e.message, null)
+                    }
+                }
+                "hasNotificationPermission" -> {
+                    try {
+                        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+                        } else {
+                            true // Notificações não requerem permissão explícita antes do Android 13
+                        }
+                        Log.d(TAG, "Permissão de notificação verificada: $granted")
+                        result.success(granted)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Erro ao verificar permissão de notificação: ${e.message}")
+                        result.error("NOTIFICATION_PERMISSION_ERROR", e.message, null)
+                    }
+                }
+                "requestNotificationPermission" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionResult = result
+                            ActivityCompat.requestPermissions(
+                                this,
+                                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                                REQUEST_NOTIFICATION_PERMISSION
+                            )
+                            Log.d(TAG, "Solicitação de permissão de notificação iniciada")
+                        } else {
+                            Log.d(TAG, "Permissão de notificação não necessária (pré-Android 13)")
+                            result.success(true)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Erro ao solicitar permissão de notificação: ${e.message}")
+                        result.error("REQUEST_NOTIFICATION_ERROR", e.message, null)
+                    }
+                }
+                "getWifiInfo" -> {
+                    try {
+                        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                        val wifiInfo = wifiManager.connectionInfo
+                        val ssid = wifiInfo.ssid?.replace("\"", "") ?: "N/A"
+                        val bssid = wifiInfo.bssid?.takeIf { it != "02:00:00:00:00:00" } ?: "N/A"
+                        val resultMap = mapOf(
+                            "ssid" to ssid,
+                            "bssid" to bssid,
+                            "frequency" to wifiInfo.frequency,
+                            "rssi" to wifiInfo.rssi
+                        )
+                        Log.d(TAG, "Wi-Fi info obtained: $resultMap")
+                        result.success(resultMap)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error getting Wi-Fi info: ${e.message}")
+                        result.error("WIFI_INFO_ERROR", "Error getting Wi-Fi info: ${e.message}", null)
+                    }
+                }
+                "getMacAddress" -> {
+                    try {
+                        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                        val wifiInfo = wifiManager.connectionInfo
+                        val macAddress = wifiInfo.bssid?.takeIf { it != "02:00:00:00:00:00" } ?: "N/A"
+                        Log.d(TAG, "BSSID obtained: $macAddress")
+                        result.success(macAddress)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error getting BSSID: ${e.message}")
+                        result.error("MAC_ADDRESS_ERROR", "Error getting BSSID: ${e.message}", null)
                     }
                 }
                 else -> {
@@ -462,7 +630,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Validate APK file integrity using checksum
     private fun validateApkFile(apkFile: File): Boolean {
         try {
             val digest = MessageDigest.getInstance("SHA-256")
@@ -473,7 +640,6 @@ class MainActivity : FlutterActivity() {
                     digest.update(buffer, 0, bytesRead)
                 }
             }
-            // Basic validation: Ensure file is not empty and has valid size
             return apkFile.length() > 0 && apkFile.extension.equals("apk", ignoreCase = true)
         } catch (e: Exception) {
             Log.e(TAG, "Error validating APK file: ${e.message}")
@@ -481,7 +647,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Silent installation method
     private fun installSilently(apkFile: File, result: MethodChannel.Result) {
         try {
             val packageInstaller = packageManager.packageInstaller
@@ -489,7 +654,6 @@ class MainActivity : FlutterActivity() {
             val sessionId = packageInstaller.createSession(params)
             val session = packageInstaller.openSession(sessionId)
 
-            // Copy APK to session
             FileInputStream(apkFile).use { input ->
                 session.openWrite("package", 0, apkFile.length()).use { output ->
                     input.copyTo(output)
@@ -497,7 +661,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-            // Create explicit intent and PendingIntent
             val intent = Intent(this, InstallResultReceiver::class.java).apply {
                 action = "com.example.mdm_client_base.INSTALL_RESULT"
                 putExtra("sessionId", sessionId)
@@ -509,14 +672,8 @@ class MainActivity : FlutterActivity() {
                 PendingIntent.FLAG_UPDATE_CURRENT
             }
 
-            val pendingIntent = PendingIntent.getBroadcast(
-                this,
-                sessionId,
-                intent,
-                flags
-            )
+            val pendingIntent = PendingIntent.getBroadcast(this, sessionId, intent, flags)
 
-            // Register receiver for installation result
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     try {
@@ -532,29 +689,12 @@ class MainActivity : FlutterActivity() {
                             else -> {
                                 Log.e(TAG, "Silent installation failed: Status=$status, Message=$message")
                                 Log.d(TAG, "Falling back to normal installation")
-                                try {
-                                    installNormally(apkFile, result)
-                                } catch (fallbackError: Exception) {
-                                    Log.e(TAG, "Fallback installation failed: ${fallbackError.message}")
-                                    result.error(
-                                        "INSTALL_FAILED",
-                                        "Failed both methods - Silent: $message, Normal: ${fallbackError.message}",
-                                        null
-                                    )
-                                }
+                                installNormally(apkFile, result)
                             }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error processing silent installation result: ${e.message}")
-                        try {
-                            installNormally(apkFile, result)
-                        } catch (fallbackError: Exception) {
-                            result.error(
-                                "INSTALL_ERROR",
-                                "Error processing result and fallback: ${e.message}, ${fallbackError.message}",
-                                null
-                            )
-                        }
+                        installNormally(apkFile, result)
                     } finally {
                         try {
                             context.unregisterReceiver(this)
@@ -577,15 +717,10 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "Silent installation session committed with ID: $sessionId")
         } catch (e: Exception) {
             Log.e(TAG, "Error during silent installation: ${e.message}")
-            try {
-                installNormally(apkFile, result)
-            } catch (fallbackError: Exception) {
-                result.error("INSTALL_ERROR", "Silent installation failed: ${e.message}, Fallback failed: ${fallbackError.message}", null)
-            }
+            installNormally(apkFile, result)
         }
     }
 
-    // Normal installation method
     private fun installNormally(apkFile: File, result: MethodChannel.Result) {
         Log.d(TAG, "Starting normal installation")
         try {
@@ -593,16 +728,11 @@ class MainActivity : FlutterActivity() {
             if (!internalDir.exists()) {
                 internalDir.mkdirs()
             }
-
             val internalApkFile = File(internalDir, apkFile.name)
             apkFile.copyTo(internalApkFile, overwrite = true)
             Log.d(TAG, "APK copied to internal directory: ${internalApkFile.absolutePath}")
 
-            val uri = FileProvider.getUriForFile(
-                this,
-                "com.example.mdm_client_base.fileprovider",
-                internalApkFile
-            )
+            val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", internalApkFile)
             Log.d(TAG, "URI generated by FileProvider: $uri")
 
             val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {

@@ -60,4 +60,13 @@ dependencies {
     
     // Suporte para múltiplas versões do Dex
     implementation("androidx.multidex:multidex:2.0.1")
+    
+    // Corrigido: usando sintaxe Kotlin DSL e referência correta da variável
+    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24")
+    
+    // Corrigido: removendo aspas extras e usando sintaxe correta
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.core:core-ktx:1.10.1")
+    implementation("androidx.activity:activity:1.7.2")
+    implementation("androidx.fragment:fragment:1.6.1")
 }
