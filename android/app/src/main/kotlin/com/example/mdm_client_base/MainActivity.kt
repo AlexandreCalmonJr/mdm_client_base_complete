@@ -196,73 +196,101 @@ class MainActivity : FlutterActivity() {
                     startActivity(intent)
                     result.success(null)
                 }
-                "updateBlockList" -> {
-                val appsToBlock = call.argument<List<String>>("packages")
-                if (appsToBlock != null) {
-                    try {
-                        // Atualizar a lista de bloqueio no AppBlockerService
-                        Log.d(TAG, "Atualizando lista de bloqueio no AppBlockerService: $appsToBlock")
-                        AppBlockerService.blockList.clear()
-                        AppBlockerService.blockList.addAll(appsToBlock)
-                        Log.d(TAG, "Lista de bloqueio de acessibilidade atualizada: ${AppBlockerService.blockList}")
+// Substitua o método "updateBlockList" no MainActivity.kt com esta versão melhorada:
 
-                        // Bloqueio via DevicePolicyManager para aplicativos do sistema, se for Device Owner
-                        if (devicePolicyManager.isDeviceOwnerApp(packageName)) {
-                            Log.d(TAG, "Aplicando bloqueio via DevicePolicyManager para aplicativos do sistema")
-                            appsToBlock.forEach { packageName ->
-                                try {
-                                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
-                                    val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                                    if (isSystemApp) {
-                                        devicePolicyManager.setApplicationHidden(adminComponent, packageName, true)
-                                        devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf(packageName), true)
-                                        Log.d(TAG, "Aplicativo do sistema bloqueado via DevicePolicyManager: $packageName")
-                                    } else {
-                                        Log.d(TAG, "Aplicativo não-sistema $packageName será bloqueado via serviço de acessibilidade")
-                                    }
-                                } catch (e: PackageManager.NameNotFoundException) {
-                                    Log.e(TAG, "Pacote $packageName não encontrado: ${e.message}")
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Erro ao bloquear $packageName via DevicePolicyManager: ${e.message}")
-                                }
+"updateBlockList" -> {
+    val appsToBlock = call.argument<List<String>>("packages")
+    if (appsToBlock != null) {
+        try {
+            // Atualizar a lista de bloqueio no AppBlockerService
+            Log.d(TAG, "Atualizando lista de bloqueio no AppBlockerService: $appsToBlock")
+            AppBlockerService.blockList.clear()
+            AppBlockerService.blockList.addAll(appsToBlock)
+            Log.d(TAG, "Lista de bloqueio de acessibilidade atualizada: ${AppBlockerService.blockList}")
+
+            // Verificar se é Device Owner ou Device Admin
+            val isDeviceOwner = devicePolicyManager.isDeviceOwnerApp(packageName)
+            val isDeviceAdmin = devicePolicyManager.isAdminActive(adminComponent)
+            
+            Log.d(TAG, "Status: Device Owner=$isDeviceOwner, Device Admin=$isDeviceAdmin")
+
+            if (isDeviceOwner) {
+                Log.d(TAG, "Aplicando bloqueio via DevicePolicyManager (Device Owner)")
+                // Lógica específica para Device Owner (apps do sistema)
+                appsToBlock.forEach { packageName ->
+                    try {
+                        val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                        val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                        if (isSystemApp) {
+                            devicePolicyManager.setApplicationHidden(adminComponent, packageName, true)
+                            // Note: setPackagesSuspended pode não funcionar em todas as versões
+                            try {
+                                devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf(packageName), true)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Não foi possível suspender $packageName: ${e.message}")
                             }
-                            // Desbloquear aplicativos que não estão na lista
-                            val previouslyBlockedApps = AppBlockerService.blockList - appsToBlock.toSet()
-                            Log.d(TAG, "Desbloqueando aplicativos via DevicePolicyManager: $previouslyBlockedApps")
-                            previouslyBlockedApps.forEach { packageName ->
-                                try {
-                                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
-                                    val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                                    if (isSystemApp) {
-                                        devicePolicyManager.setApplicationHidden(adminComponent, packageName, false)
-                                        devicePolicyManager.setPackagesSuspended(adminComponent, arrayOf(packageName), false)
-                                        Log.d(TAG, "Aplicativo do sistema desbloqueado via DevicePolicyManager: $packageName")
-                                    }
-                                } catch (e: PackageManager.NameNotFoundException) {
-                                    Log.e(TAG, "Pacote $packageName não encontrado: ${e.message}")
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Erro ao desbloquear $packageName via DevicePolicyManager: ${e.message}")
-                                }
-                            }
-                        } else if (appsToBlock.contains("com.android.settings")) {
-                            Log.w(TAG, "Não é possível bloquear com.android.settings sem Device Owner")
-                            result.error(
-                                "NOT_DEVICE_OWNER_SYSTEM_APP",
-                                "O aplicativo precisa ser Device Owner para bloquear aplicativos do sistema como com.android.settings",
-                                null
-                            )
-                            return@setMethodCallHandler
+                            Log.d(TAG, "Aplicativo do sistema bloqueado via DevicePolicyManager: $packageName")
+                        } else {
+                            Log.d(TAG, "Aplicativo não-sistema $packageName será bloqueado via serviço de acessibilidade")
                         }
-                        result.success(true)
+                    } catch (e: PackageManager.NameNotFoundException) {
+                        Log.e(TAG, "Pacote $packageName não encontrado: ${e.message}")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Erro ao atualizar lista de bloqueio: ${e.message}")
-                        result.error("BLOCK_LIST_ERROR", "Erro ao atualizar lista de bloqueio: ${e.message}", null)
+                        Log.e(TAG, "Erro ao bloquear $packageName via DevicePolicyManager: ${e.message}")
                     }
-                } else {
-                    Log.e(TAG, "Lista de pacotes é nula")
-                    result.error("INVALID_ARGUMENT", "Lista de pacotes é nula", null)
                 }
+            } else if (isDeviceAdmin) {
+                Log.d(TAG, "Como Device Admin, usando apenas serviço de acessibilidade")
+                // Para Device Admin, usar apenas o serviço de acessibilidade
+                // Verificar se apps críticos do sistema estão sendo bloqueados
+                val systemApps = listOf("com.android.settings")
+                val systemAppsToBlock = appsToBlock.intersect(systemApps.toSet())
+                if (systemAppsToBlock.isNotEmpty()) {
+                    Log.w(TAG, "Tentativa de bloquear apps do sistema sem Device Owner: $systemAppsToBlock")
+                    result.error(
+                        "INSUFFICIENT_PERMISSIONS",
+                        "Para bloquear aplicativos do sistema (${systemAppsToBlock.joinToString()}), é necessário ser Device Owner",
+                        null
+                    )
+                    return@setMethodCallHandler
+                }
+            } else {
+                Log.w(TAG, "Nem Device Owner nem Device Admin - bloqueio limitado")
+                result.error(
+                    "NOT_ADMIN",
+                    "O aplicativo precisa ser Device Admin ou Device Owner para gerenciar bloqueio de aplicativos",
+                    null
+                )
+                return@setMethodCallHandler
             }
+
+            // Verificar se o serviço de acessibilidade está ativo
+            if (!isAccessibilityServiceEnabled(this, AppBlockerService::class.java)) {
+                Log.w(TAG, "Serviço de acessibilidade não está ativo")
+                result.error(
+                    "ACCESSIBILITY_SERVICE_DISABLED",
+                    "O serviço de acessibilidade precisa estar ativo para o bloqueio funcionar",
+                    mapOf("needsAccessibility" to true)
+                )
+                return@setMethodCallHandler
+            }
+
+            result.success(mapOf(
+                "status" to "success",
+                "isDeviceOwner" to isDeviceOwner,
+                "isDeviceAdmin" to isDeviceAdmin,
+                "blockedApps" to appsToBlock.size,
+                "accessibilityEnabled" to true
+            ))
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao atualizar lista de bloqueio: ${e.message}")
+            result.error("BLOCK_LIST_ERROR", "Erro ao atualizar lista de bloqueio: ${e.message}", null)
+        }
+    } else {
+        Log.e(TAG, "Lista de pacotes é nula")
+        result.error("INVALID_ARGUMENT", "Lista de pacotes é nula", null)
+    }
+}
                 "isDeviceAdmin" -> {
                     val isAdminActive = devicePolicyManager.isAdminActive(adminComponent)
                     result.success(isAdminActive)

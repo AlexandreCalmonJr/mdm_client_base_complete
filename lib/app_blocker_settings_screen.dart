@@ -100,32 +100,97 @@ class _AppBlockerSettingsScreenState extends State<AppBlockerSettingsScreen> {
     }
   }
 
-  Future<void> _saveAndApplyBlockList() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList('blocked_apps', _blockedApps.toList());
-      await platform.invokeMethod('updateBlockList', {'packages': _blockedApps.toList()});
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Lista de bloqueio aplicada com sucesso!'),
-            backgroundColor: Colors.green,
-          ),
-        );
+  // Substitua o método _saveAndApplyBlockList no app_blocker_settings_screen.dart:
+
+Future<void> _saveAndApplyBlockList() async {
+  try {
+    // Salvar nas preferências
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('blocked_apps', _blockedApps.toList());
+    
+    // Aplicar via método nativo
+    final result = await platform.invokeMethod('updateBlockList', {
+      'packages': _blockedApps.toList()
+    });
+    
+    debugPrint("Resultado do bloqueio: $result");
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Lista de bloqueio aplicada com sucesso!\nApps bloqueados: ${_blockedApps.length}'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  } on PlatformException catch (e) {
+    debugPrint("Erro PlatformException: ${e.code} - ${e.message}");
+    
+    if (mounted) {
+      String errorMessage = '';
+      switch (e.code) {
+        case 'INSUFFICIENT_PERMISSIONS':
+          errorMessage = 'Permissões insuficientes para bloquear apps do sistema';
+          break;
+        case 'ACCESSIBILITY_SERVICE_DISABLED':
+          errorMessage = 'O serviço de acessibilidade precisa estar ativo';
+          // Mostrar diálogo para ir para configurações
+          _showAccessibilityDialog();
+          return;
+        case 'NOT_ADMIN':
+          errorMessage = 'O app precisa ser Device Admin ou Device Owner';
+          break;
+        default:
+          errorMessage = 'Erro: ${e.message}';
       }
-    } catch (e) {
-      debugPrint("Erro ao aplicar lista de bloqueio: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Erro ao aplicar lista: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
+  } catch (e) {
+    debugPrint("Erro geral ao aplicar lista de bloqueio: $e");
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro inesperado: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
+}
 
+Future<void> _showAccessibilityDialog() async {
+  if (!mounted) return;
+  
+  showDialog(
+    context: context,
+    builder: (BuildContext context) {
+      return AlertDialog(
+        title: const Text('Serviço de Acessibilidade'),
+        content: const Text('O serviço de acessibilidade precisa estar ativo para o bloqueio funcionar. Deseja ir para as configurações?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(context).pop();
+              await platform.invokeMethod('openAccessibilitySettings');
+            },
+            child: const Text('Ir para Configurações'),
+          ),
+        ],
+      );
+    },
+  );
+}
   void _onAppToggle(AppInfo app, bool isBlocked) {
     setState(() {
       if (isBlocked) {
